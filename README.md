@@ -133,6 +133,13 @@ git clone https://github.com/user/repo.git  # routed through proxy automatically
 
 # To undo
 git config --global --unset url."http://localhost:8080/git/github.com/".insteadOf
+
+# Use as a shared Go build cache (GOCACHEPROG)
+# The cacheprog subcommand implements the GOCACHEPROG protocol, backed by the server's /buildcache/ endpoint.
+# Artifacts are stored on the server and a local copy is kept for DiskPath responses.
+export GOCACHEPROG="content-cache cacheprog --server http://localhost:8080"
+go build ./...  # First build: artifacts uploaded to server
+go build ./...  # Subsequent builds on any machine: artifacts served from server cache
 ```
 
 ## Performance
@@ -146,6 +153,8 @@ git config --global --unset url."http://localhost:8080/git/github.com/".insteadO
 
 ### Implemented
 - **GOPROXY Protocol**: Full support for Go module proxy protocol (`/@v/list`, `.info`, `.mod`, `.zip`)
+- **Go Checksum Database Proxy**: Caches `sum.golang.org` lookups at `/sumdb/` (also accessible at `/goproxy/sumdb/`); entries never expire since they are cryptographically immutable
+- **Go Build Cache (GOCACHEPROG)**: `cacheprog` subcommand implements the `GOCACHEPROG` protocol, backed by the `/buildcache/` HTTP endpoint — enables shared, persistent build artifact caching across CI runners and developer machines
 - **NPM Registry Protocol**: Complete NPM registry support with tarball caching and integrity verification
 - **PyPI Simple API**: Full support for PEP 503/691 Simple Repository API with wheel and sdist caching
 - **Maven Repository**: Full support for Maven Central with JAR, POM, and checksum caching
@@ -181,6 +190,7 @@ graph TD
     A --> H[Maven Handler]
     A --> I[RubyGems Handler]
     A --> J[Git Handler]
+    A --> K[BuildCache Handler]
 
     B --> DL[Download Deduplication]
     C --> DL
@@ -189,18 +199,21 @@ graph TD
     H --> DL
     I --> DL
     J --> DL
+    K --> E
 
     DL --> E[Content-Addressable Store]
 
     E --> F[Storage Backend]
 
     A -.-> A1["/goproxy/* or /*"]
+    A -.-> A9["/sumdb/*"]
     A -.-> A2["/npm/*"]
     A -.-> A3["/v2/*"]
     A -.-> A4["/pypi/*"]
     A -.-> A5["/maven/*"]
     A -.-> A6["/rubygems/*"]
     A -.-> A8["/git/*"]
+    A -.-> A10["/buildcache/*"]
     A -.-> A7["/health, /stats"]
 
     E -.-> E1["blobs/{hash[0:2]}/{hash}"]
@@ -279,7 +292,7 @@ OCI registry credentials (username/password) are configured via the credentials 
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--cache-ttl` | `CACHE_TTL` | `168h` | Cache TTL (0 to disable) |
+| `--blob-retention` | `BLOB_RETENTION` | `24h` | Minimum time to retain blobs after last access before GC may delete them (0 to disable) |
 | `--cache-max-size` | `CACHE_MAX_SIZE` | `10737418240` | Maximum cache size in bytes (10GB, 0 to disable) |
 | `--expiry-check-interval` | `EXPIRY_CHECK_INTERVAL` | `1h` | How often to check for expired content |
 | `--gc-interval` | `GC_INTERVAL` | `1h` | How often to run garbage collection |
@@ -299,6 +312,12 @@ OCI registry credentials (username/password) are configured via the credentials 
 | `--metrics-otlp-endpoint` | `METRICS_OTLP_ENDPOINT` | | OTLP gRPC endpoint (e.g., `localhost:4317`) |
 | `--metrics-prometheus` | `METRICS_PROMETHEUS` | `false` | Enable Prometheus `/metrics` endpoint |
 | `--metrics-interval` | `METRICS_INTERVAL` | `10s` | Metrics export interval |
+
+### Debug Options
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--pprof-address` | `PPROF_ADDRESS` | | Address for the pprof HTTP server (e.g., `localhost:6060`); disabled if empty |
 
 ### Example: Command Line
 
@@ -513,7 +532,7 @@ All sections are optional — omit any protocol section to use the default upstr
 go test ./...
 
 # Run with debug logging
-./content-cache -log-level debug
+./content-cache serve --log-level debug
 
 # Test the Go proxy endpoint
 curl http://localhost:8080/goproxy/github.com/pkg/errors/@v/v0.9.1.info
@@ -564,7 +583,7 @@ content-cache exports OpenTelemetry metrics for monitoring cache effectiveness.
 
 ### Labels
 
-- `protocol`: npm, pypi, goproxy, maven, rubygems, oci, git
+- `protocol`: npm, pypi, goproxy, sumdb, maven, rubygems, oci, git, buildcache
 - `endpoint`: metadata, tarball, artifact, blob, manifest, etc.
 - `cache_result`: hit, miss, bypass
 - `status_class`: 2xx, 3xx, 4xx, 5xx
