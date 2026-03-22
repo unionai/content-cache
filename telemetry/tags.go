@@ -25,11 +25,21 @@ const (
 	CacheNA     CacheResult = "na"
 )
 
+// AuthOutcome represents the result of an authentication check.
+type AuthOutcome string
+
+const (
+	AuthOutcomeAllowed      AuthOutcome = "allowed"
+	AuthOutcomeUnauthorized AuthOutcome = "unauthorized"
+	AuthOutcomeForbidden    AuthOutcome = "forbidden"
+)
+
 // RequestTags holds mutable request metadata that handlers can set for logging.
 type RequestTags struct {
 	Protocol    string
 	CacheResult CacheResult
 	Endpoint    string
+	AuthOutcome AuthOutcome // empty string means the route is not auth-protected
 }
 
 // InjectTags creates a new request with an empty RequestTags in context.
@@ -66,6 +76,13 @@ func SetProtocol(r *http.Request, protocol string) {
 func SetEndpoint(r *http.Request, endpoint string) {
 	if tags := GetTags(r); tags != nil {
 		tags.Endpoint = endpoint
+	}
+}
+
+// SetAuthOutcome sets the auth outcome tag for metrics and logging.
+func SetAuthOutcome(r *http.Request, outcome AuthOutcome) {
+	if tags := GetTags(r); tags != nil {
+		tags.AuthOutcome = outcome
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/require"
 	"github.com/wolfeidau/content-cache/auth"
+	"github.com/wolfeidau/content-cache/telemetry"
 )
 
 func TestAuthMiddleware_NoToken_NoOp(t *testing.T) {
@@ -356,6 +357,82 @@ func TestOIDCMiddleware_ValidToken_ClaimsStoredInContext(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.NotNil(t, gotClaims, "claims should be stored in request context")
 	require.Equal(t, oidcProvider.server.URL, gotClaims.Issuer)
+}
+
+func TestOIDCMiddleware_SetsAuthOutcomeTags(t *testing.T) {
+	oidcProvider := newTestOIDCProvider(t)
+
+	cases := []struct {
+		name        string
+		permissions []string
+		path        string
+		setupReq    func(*http.Request, *testOIDCProvider) *http.Request
+		wantStatus  int
+		wantOutcome telemetry.AuthOutcome
+	}{
+		{
+			name:        "allowed",
+			permissions: []string{"goproxy"},
+			path:        "/goproxy/github.com/foo/bar/@v/list",
+			setupReq: func(r *http.Request, p *testOIDCProvider) *http.Request {
+				r.Header.Set("Authorization", "Bearer "+p.token(t, []string{"test-audience"}))
+				return r
+			},
+			wantStatus:  http.StatusOK,
+			wantOutcome: telemetry.AuthOutcomeAllowed,
+		},
+		{
+			name:        "unauthorized_missing_header",
+			permissions: []string{"goproxy"},
+			path:        "/goproxy/github.com/foo/bar/@v/list",
+			setupReq:    func(r *http.Request, _ *testOIDCProvider) *http.Request { return r },
+			wantStatus:  http.StatusUnauthorized,
+			wantOutcome: telemetry.AuthOutcomeUnauthorized,
+		},
+		{
+			name:        "unauthorized_invalid_token",
+			permissions: []string{"goproxy"},
+			path:        "/goproxy/github.com/foo/bar/@v/list",
+			setupReq: func(r *http.Request, _ *testOIDCProvider) *http.Request {
+				r.Header.Set("Authorization", "Bearer not-a-valid-jwt")
+				return r
+			},
+			wantStatus:  http.StatusUnauthorized,
+			wantOutcome: telemetry.AuthOutcomeUnauthorized,
+		},
+		{
+			name:        "forbidden_insufficient_permission",
+			permissions: []string{"npm"},
+			path:        "/goproxy/github.com/foo/bar/@v/list",
+			setupReq: func(r *http.Request, p *testOIDCProvider) *http.Request {
+				r.Header.Set("Authorization", "Bearer "+p.token(t, []string{"test-audience"}))
+				return r
+			},
+			wantStatus:  http.StatusForbidden,
+			wantOutcome: telemetry.AuthOutcomeForbidden,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{
+				config: Config{OIDCValidator: oidcProvider.validator(t, tc.permissions)},
+				logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+			}
+
+			handler := s.oidcMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := telemetry.InjectTags(httptest.NewRequest(http.MethodGet, tc.path, nil))
+			req = tc.setupReq(req, oidcProvider)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			require.Equal(t, tc.wantStatus, rec.Code)
+			require.Equal(t, tc.wantOutcome, telemetry.GetTags(req).AuthOutcome)
+		})
+	}
 }
 
 func TestOIDCMiddleware_UnknownPath(t *testing.T) {

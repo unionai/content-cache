@@ -884,6 +884,9 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 		if tags.CacheResult != "" {
 			attrs = append(attrs, "cache_result", string(tags.CacheResult))
 		}
+		if tags.AuthOutcome != "" {
+			attrs = append(attrs, "auth_outcome", tags.AuthOutcome)
+		}
 
 		// Add content type if present
 		if ct := wrapped.Header().Get("Content-Type"); ct != "" {
