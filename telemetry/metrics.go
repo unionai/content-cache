@@ -592,7 +592,7 @@ func RecordHTTP(ctx context.Context, r *http.Request, status int, bytesSent int6
 	if tags != nil && tags.AuthOutcome != "" {
 		globalMetrics.authRequestsTotal.Add(ctx, 1, metric.WithAttributes(
 			attribute.String("protocol", protocol),
-			attribute.String("outcome", tags.AuthOutcome),
+			attribute.String("outcome", string(tags.AuthOutcome)),
 		))
 	}
 }

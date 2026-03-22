@@ -34,11 +34,15 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	requestsByEndpointTotal, err := meter.Int64Counter("content_cache_http_requests_by_endpoint_total")
 	require.NoError(t, err)
 
+	authRequestsTotal, err := meter.Int64Counter("content_cache_auth_requests_total")
+	require.NoError(t, err)
+
 	globalMetrics = &Metrics{
 		requestsTotal:           requestsTotal,
 		responseBytesTotal:      responseBytesTotal,
 		requestDuration:         requestDuration,
 		requestsByEndpointTotal: requestsByEndpointTotal,
+		authRequestsTotal:       authRequestsTotal,
 		meterProvider:           mp,
 	}
 
@@ -198,6 +202,39 @@ func TestRecordHTTP_NilGlobalMetrics(t *testing.T) {
 
 	// Should not panic
 	RecordHTTP(context.Background(), r, http.StatusOK, 0, 1*time.Millisecond)
+}
+
+func TestRecordHTTP_AuthMetric(t *testing.T) {
+	reader := setupTestMetrics(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/goproxy/github.com/foo/bar/@v/list", nil)
+	r = InjectTags(r)
+	SetProtocol(r, "goproxy")
+	SetAuthOutcome(r, AuthOutcomeAllowed)
+
+	RecordHTTP(context.Background(), r, http.StatusOK, 0, 10*time.Millisecond)
+
+	rm := collectMetrics(t, reader)
+	dps := findCounter(rm, "content_cache_auth_requests_total")
+	require.Len(t, dps, 1)
+	require.EqualValues(t, 1, dps[0].Value)
+	require.True(t, hasAttr(dps[0].Attributes, "protocol", "goproxy"))
+	require.True(t, hasAttr(dps[0].Attributes, "outcome", "allowed"))
+}
+
+func TestRecordHTTP_NoAuthMetricWithoutOutcome(t *testing.T) {
+	reader := setupTestMetrics(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/npm/react", nil)
+	r = InjectTags(r)
+	SetProtocol(r, "npm")
+	// AuthOutcome not set
+
+	RecordHTTP(context.Background(), r, http.StatusOK, 0, 5*time.Millisecond)
+
+	rm := collectMetrics(t, reader)
+	dps := findCounter(rm, "content_cache_auth_requests_total")
+	require.Empty(t, dps)
 }
 
 func TestStatusClass(t *testing.T) {

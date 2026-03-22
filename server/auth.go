@@ -13,6 +13,10 @@ import (
 // authMiddleware returns middleware that validates Bearer token authentication.
 // When AuthToken is empty, the middleware is a no-op (allows unauthenticated access).
 // Exact paths /health and /metrics are exempt from authentication.
+//
+// Note: this middleware does not set AuthOutcome on request tags because it runs
+// before protocol-specific middleware and does not have per-protocol context.
+// Auth observability is only available when using oidcMiddleware.
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	if s.config.AuthToken == "" {
 		return next
@@ -59,7 +63,7 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 
 		authHeader := r.Header.Get("Authorization")
 		if !strings.HasPrefix(authHeader, "Bearer ") {
-			telemetry.SetAuthOutcome(r, "unauthorized")
+			telemetry.SetAuthOutcome(r, telemetry.AuthOutcomeUnauthorized)
 			unauthorizedResponse(w)
 			return
 		}
@@ -68,18 +72,19 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 		claims, err := s.config.OIDCValidator.ValidateToken(r.Context(), token)
 		if err != nil {
 			s.logger.Info("OIDC token validation failed", "error", err, "path", r.URL.Path)
-			telemetry.SetAuthOutcome(r, "unauthorized")
+			telemetry.SetAuthOutcome(r, telemetry.AuthOutcomeUnauthorized)
 			unauthorizedResponse(w)
 			return
 		}
 
 		if !claims.HasPermission(protocol) {
-			telemetry.SetAuthOutcome(r, "forbidden")
+			s.logger.Info("OIDC insufficient permission", "protocol", protocol, "path", r.URL.Path)
+			telemetry.SetAuthOutcome(r, telemetry.AuthOutcomeForbidden)
 			forbiddenResponse(w)
 			return
 		}
 
-		telemetry.SetAuthOutcome(r, "allowed")
+		telemetry.SetAuthOutcome(r, telemetry.AuthOutcomeAllowed)
 		ctx := auth.WithClaims(r.Context(), claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

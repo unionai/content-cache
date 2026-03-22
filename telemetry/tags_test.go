@@ -61,6 +61,17 @@ func TestSetEndpoint(t *testing.T) {
 	require.Equal(t, "blob", GetTags(r).Endpoint)
 }
 
+func TestSetAuthOutcome(t *testing.T) {
+	r := newTaggedRequest()
+	SetAuthOutcome(r, AuthOutcomeAllowed)
+	require.Equal(t, AuthOutcomeAllowed, GetTags(r).AuthOutcome)
+}
+
+func TestSetAuthOutcome_NoopWithoutInject(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/test", nil)
+	SetAuthOutcome(r, AuthOutcomeAllowed) // should not panic
+}
+
 func TestTagsMutationVisibleThroughPointer(t *testing.T) {
 	r := newTaggedRequest()
 	tags := GetTags(r)
