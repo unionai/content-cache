@@ -58,6 +58,7 @@ When adding a new protocol:
 3. Register routes in `server/http.go` (`registerRoutes`)
 4. Add configuration flags in `cmd/content-cache/main.go`
 5. Update README.md with usage examples
+6. Add OpenTelemetry metrics via `telemetry/metrics.go` (counter + histogram as appropriate)
 
 ## Code Style
 
@@ -67,6 +68,7 @@ When adding a new protocol:
 - **Package names**: Lowercase, descriptive (goproxy, npm, oci, pypi, maven, git)
 - **Contexts**: Pass contexts for cancellation and tracing throughout
 - **Options pattern**: Use functional options for configurable types (see `WithLogger`, `WithUpstream`)
+- **Metrics**: Every feature must ship with metrics. Request-lifecycle attributes (protocol, outcome, endpoint) go on `RequestTags` via setters in `telemetry/tags.go`; recording happens in `RecordHTTP` / `RecordBackendOp`. Do not call metrics APIs directly from handlers or middleware — set tags instead.
 
 ## Documentation Style
 
@@ -113,4 +115,3 @@ The base image is cached at `${BUILDKITE_HOSTED_REGISTRY_URL}/content_cache_base
 
 - S3 storage backend
 - Compression (zstd)
-- OpenTelemetry metrics and tracing

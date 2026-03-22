@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/wolfeidau/content-cache/auth"
+	"github.com/wolfeidau/content-cache/telemetry"
 )
 
 // authMiddleware returns middleware that validates Bearer token authentication.
@@ -54,8 +55,11 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
+		telemetry.SetProtocol(r, protocol)
+
 		authHeader := r.Header.Get("Authorization")
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			telemetry.SetAuthOutcome(r, "unauthorized")
 			unauthorizedResponse(w)
 			return
 		}
@@ -63,16 +67,19 @@ func (s *Server) oidcMiddleware(next http.Handler) http.Handler {
 
 		claims, err := s.config.OIDCValidator.ValidateToken(r.Context(), token)
 		if err != nil {
-			s.logger.Debug("OIDC token validation failed", "error", err, "path", r.URL.Path)
+			s.logger.Info("OIDC token validation failed", "error", err, "path", r.URL.Path)
+			telemetry.SetAuthOutcome(r, "unauthorized")
 			unauthorizedResponse(w)
 			return
 		}
 
 		if !claims.HasPermission(protocol) {
+			telemetry.SetAuthOutcome(r, "forbidden")
 			forbiddenResponse(w)
 			return
 		}
 
+		telemetry.SetAuthOutcome(r, "allowed")
 		ctx := auth.WithClaims(r.Context(), claims)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

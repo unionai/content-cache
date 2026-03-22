@@ -30,6 +30,7 @@ type RequestTags struct {
 	Protocol    string
 	CacheResult CacheResult
 	Endpoint    string
+	AuthOutcome string // "allowed" | "unauthorized" | "forbidden" | "" (not an auth-protected route)
 }
 
 // InjectTags creates a new request with an empty RequestTags in context.
@@ -66,6 +67,13 @@ func SetProtocol(r *http.Request, protocol string) {
 func SetEndpoint(r *http.Request, endpoint string) {
 	if tags := GetTags(r); tags != nil {
 		tags.Endpoint = endpoint
+	}
+}
+
+// SetAuthOutcome sets the auth outcome tag for metrics and logging.
+func SetAuthOutcome(r *http.Request, outcome string) {
+	if tags := GetTags(r); tags != nil {
+		tags.AuthOutcome = outcome
 	}
 }
 

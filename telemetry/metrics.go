@@ -59,6 +59,9 @@ type Metrics struct {
 	backendRequestsTotal    metric.Int64Counter
 	backendBytesTotal       metric.Int64Counter
 
+	// Auth metrics
+	authRequestsTotal metric.Int64Counter
+
 	// Reaper metrics
 	reaperDeletedTotal metric.Int64Counter
 	reaperDuration     metric.Float64Histogram
@@ -206,6 +209,15 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	requestsByEndpointTotal, err := meter.Int64Counter(
 		"content_cache_http_requests_by_endpoint_total",
 		metric.WithDescription("Total number of HTTP requests by endpoint (detail metric)"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	authRequestsTotal, err := meter.Int64Counter(
+		"content_cache_auth_requests_total",
+		metric.WithDescription("Total OIDC-authenticated requests by outcome and protocol"),
 		metric.WithUnit("{request}"),
 	)
 	if err != nil {
@@ -479,6 +491,7 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	}
 
 	globalMetrics = &Metrics{
+		authRequestsTotal:              authRequestsTotal,
 		reaperDeletedTotal:             reaperDeletedTotal,
 		reaperDuration:                 reaperDuration,
 		requestsTotal:                  requestsTotal,
@@ -573,6 +586,14 @@ func RecordHTTP(ctx context.Context, r *http.Request, status int, bytesSent int6
 			attribute.String("cache_result", cacheResult),
 		}
 		globalMetrics.requestsByEndpointTotal.Add(ctx, 1, metric.WithAttributes(detailAttrs...))
+	}
+
+	// Auth metric: only for OIDC-protected routes where auth outcome was set
+	if tags != nil && tags.AuthOutcome != "" {
+		globalMetrics.authRequestsTotal.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("protocol", protocol),
+			attribute.String("outcome", tags.AuthOutcome),
+		))
 	}
 }
 
