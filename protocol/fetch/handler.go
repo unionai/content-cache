@@ -158,6 +158,11 @@ func (h *Handler) serveUpstream(w http.ResponseWriter, r *http.Request, upstream
 	ctx := r.Context()
 	cacheKey := upstream.String()
 	logger := h.logger.With("upstream_url", cacheKey, "endpoint", endpoint)
+	if r.Header.Get("Range") != "" {
+		telemetry.SetCacheResult(r, telemetry.CacheBypass)
+		writeRangeNotSupported(w)
+		return
+	}
 
 	if entry, err := h.index.Get(ctx, cacheKey); err == nil {
 		if served, serveErr := h.serveCached(w, r, entry, logger); serveErr == nil && served {
@@ -173,6 +178,10 @@ func (h *Handler) serveUpstream(w http.ResponseWriter, r *http.Request, upstream
 	}
 
 	telemetry.SetCacheResult(r, telemetry.CacheMiss)
+	if isConditionalRequest(r) {
+		h.proxyConditionalMiss(w, r, upstream, allowedHosts, logger)
+		return
+	}
 	if r.Method == http.MethodHead {
 		h.handleHeadMiss(w, r, upstream, allowedHosts, logger)
 		return
@@ -197,7 +206,7 @@ func (h *Handler) serveUpstream(w http.ResponseWriter, r *http.Request, upstream
 }
 
 func (h *Handler) handleHeadMiss(w http.ResponseWriter, r *http.Request, upstream *url.URL, allowedHosts hostSet, logger *slog.Logger) {
-	resp, err := h.doRequest(r.Context(), http.MethodHead, upstream.String(), allowedHosts)
+	resp, err := h.doRequest(r.Context(), http.MethodHead, upstream.String(), allowedHosts, r)
 	if err != nil {
 		h.writeFetchError(w, r, logger, err)
 		return
@@ -205,7 +214,35 @@ func (h *Handler) handleHeadMiss(w http.ResponseWriter, r *http.Request, upstrea
 	defer func() { _ = resp.Body.Close() }()
 
 	h.copyHeaders(w, resp.Header, 0)
+	if resp.StatusCode == http.StatusNotModified {
+		writeNotModified(w, resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"))
+		return
+	}
 	w.WriteHeader(http.StatusOK)
+}
+
+func (h *Handler) proxyConditionalMiss(w http.ResponseWriter, r *http.Request, upstream *url.URL, allowedHosts hostSet, logger *slog.Logger) {
+	resp, err := h.doRequest(r.Context(), r.Method, upstream.String(), allowedHosts, r)
+	if err != nil {
+		h.writeFetchError(w, r, logger, err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNotModified {
+		writeNotModified(w, resp.Header.Get("ETag"), resp.Header.Get("Last-Modified"))
+		return
+	}
+
+	h.copyHeaders(w, resp.Header, 0)
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		logger.Error("failed to stream conditional upstream response", "error", err)
+	}
 }
 
 func (h *Handler) ensureCached(ctx context.Context, upstreamURL string, allowedHosts hostSet) error {
@@ -220,7 +257,7 @@ func (h *Handler) ensureCached(ctx context.Context, upstreamURL string, allowedH
 }
 
 func (h *Handler) downloadAndCache(ctx context.Context, upstreamURL string, allowedHosts hostSet) (*download.Result, error) {
-	resp, err := h.doRequest(ctx, http.MethodGet, upstreamURL, allowedHosts)
+	resp, err := h.doRequest(ctx, http.MethodGet, upstreamURL, allowedHosts, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +316,11 @@ func (h *Handler) downloadAndCache(ctx context.Context, upstreamURL string, allo
 }
 
 func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, entry *CachedResource, logger *slog.Logger) (bool, error) {
+	if isNotModified(r, entry) {
+		writeNotModified(w, entry.ETag, entry.LastModified)
+		return true, nil
+	}
+
 	ref, err := contentcache.ParseBlobRef(entry.BlobHash)
 	if err != nil {
 		logger.Warn("invalid blob ref in cache entry", "blob_hash", entry.BlobHash, "error", err)
@@ -306,16 +348,21 @@ func (h *Handler) serveCached(w http.ResponseWriter, r *http.Request, entry *Cac
 	return true, nil
 }
 
-func (h *Handler) doRequest(ctx context.Context, method, upstreamURL string, allowedHosts hostSet) (*http.Response, error) {
+func (h *Handler) doRequest(ctx context.Context, method, upstreamURL string, allowedHosts hostSet, source *http.Request) (*http.Response, error) {
 	client := h.clientWithRedirectPolicy(allowedHosts)
 	req, err := http.NewRequestWithContext(ctx, method, upstreamURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating upstream request: %w", err)
 	}
+	req.Header.Set("Accept-Encoding", "identity")
+	copyConditionalRequestHeaders(req, source)
 
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		return resp, nil
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		_ = resp.Body.Close()
@@ -357,6 +404,18 @@ func (h *Handler) writeFetchError(w http.ResponseWriter, r *http.Request, logger
 	default:
 		logger.Error("upstream fetch failed", "error", err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
+	}
+}
+
+func copyConditionalRequestHeaders(dst *http.Request, src *http.Request) {
+	if src == nil {
+		return
+	}
+	if etag := src.Header.Get("If-None-Match"); etag != "" {
+		dst.Header.Set("If-None-Match", etag)
+	}
+	if modifiedSince := src.Header.Get("If-Modified-Since"); modifiedSince != "" {
+		dst.Header.Set("If-Modified-Since", modifiedSince)
 	}
 }
 
@@ -429,6 +488,66 @@ func contentTypeOrDefault(contentType string) string {
 		return "application/octet-stream"
 	}
 	return contentType
+}
+
+func isConditionalRequest(r *http.Request) bool {
+	return r.Header.Get("If-None-Match") != "" || r.Header.Get("If-Modified-Since") != ""
+}
+
+func isNotModified(r *http.Request, entry *CachedResource) bool {
+	if etag := r.Header.Get("If-None-Match"); etag != "" {
+		return matchesIfNoneMatch(etag, entry.ETag)
+	}
+	if modifiedSince := r.Header.Get("If-Modified-Since"); modifiedSince != "" && entry.LastModified != "" {
+		parsedModifiedSince, err := http.ParseTime(modifiedSince)
+		if err != nil {
+			return false
+		}
+		lastModified, err := http.ParseTime(entry.LastModified)
+		if err != nil {
+			return false
+		}
+		return !lastModified.After(parsedModifiedSince)
+	}
+	return false
+}
+
+func matchesIfNoneMatch(header, etag string) bool {
+	if etag == "" {
+		return false
+	}
+	want := weakETag(etag)
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if weakETag(candidate) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func weakETag(etag string) string {
+	etag = strings.TrimSpace(etag)
+	etag = strings.TrimPrefix(etag, "W/")
+	return strings.TrimPrefix(etag, "w/")
+}
+
+func writeNotModified(w http.ResponseWriter, etag, lastModified string) {
+	if etag != "" {
+		w.Header().Set("ETag", etag)
+	}
+	if lastModified != "" {
+		w.Header().Set("Last-Modified", lastModified)
+	}
+	w.WriteHeader(http.StatusNotModified)
+}
+
+func writeRangeNotSupported(w http.ResponseWriter) {
+	w.Header().Set("Accept-Ranges", "none")
+	http.Error(w, "range requests are not supported", http.StatusNotImplemented)
 }
 
 func forgetDownloadOnError(d *download.Downloader, key string, err error) {

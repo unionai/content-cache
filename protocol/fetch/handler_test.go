@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
 	"github.com/buildkite/content-cache/backend"
 	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
+	"github.com/stretchr/testify/require"
 )
 
 func setupMetaDB(t *testing.T, tmpDir string) (*metadb.BoltDB, *Index) {
@@ -231,4 +231,105 @@ func TestHandlerFetchPreservesContentEncodingOnMissAndHit(t *testing.T) {
 	require.Equal(t, "br", secondRes.Header().Get("Content-Encoding"))
 	require.Equal(t, "brotli-bytes", secondRes.Body.String())
 	require.Equal(t, 1, requests)
+}
+
+func TestHandlerFetchRequestsIdentityEncoding(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Accept-Encoding"); got != "identity" {
+			http.Error(w, "unexpected accept-encoding: "+got, http.StatusNotAcceptable)
+			return
+		}
+		_, _ = w.Write([]byte("identity-only"))
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+	req := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/archives/tool.tar.gz", nil)
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "identity-only", w.Body.String())
+}
+
+func TestHandlerFetchConditionalGetReturnsNotModifiedFromCache(t *testing.T) {
+	requests := 0
+	lastModified := time.Date(2026, time.April, 10, 2, 3, 4, 0, time.UTC).Format(http.TimeFormat)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("ETag", `"abc123"`)
+		w.Header().Set("Last-Modified", lastModified)
+		_, _ = w.Write([]byte("cached-body"))
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	firstRes := httptest.NewRecorder()
+	h.ServeHTTP(firstRes, firstReq)
+	require.Equal(t, http.StatusOK, firstRes.Code)
+	require.Equal(t, "cached-body", firstRes.Body.String())
+
+	etagReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	etagReq.Header.Set("If-None-Match", `W/"abc123"`)
+	etagRes := httptest.NewRecorder()
+	h.ServeHTTP(etagRes, etagReq)
+
+	require.Equal(t, http.StatusNotModified, etagRes.Code)
+	require.Empty(t, etagRes.Body.String())
+	require.Equal(t, `"abc123"`, etagRes.Header().Get("ETag"))
+
+	modifiedReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	modifiedReq.Header.Set("If-Modified-Since", lastModified)
+	modifiedRes := httptest.NewRecorder()
+	h.ServeHTTP(modifiedRes, modifiedReq)
+
+	require.Equal(t, http.StatusNotModified, modifiedRes.Code)
+	require.Empty(t, modifiedRes.Body.String())
+	require.Equal(t, lastModified, modifiedRes.Header().Get("Last-Modified"))
+	require.Equal(t, 1, requests)
+}
+
+func TestHandlerFetchConditionalGetForwardsValidatorsOnMiss(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		require.Equal(t, `"miss-etag"`, r.Header.Get("If-None-Match"))
+		w.Header().Set("ETag", `"miss-etag"`)
+		w.WriteHeader(http.StatusNotModified)
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+	req := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	req.Header.Set("If-None-Match", `"miss-etag"`)
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNotModified, w.Code)
+	require.Empty(t, w.Body.String())
+	require.Equal(t, 1, requests)
+}
+
+func TestHandlerFetchRejectsRangeRequests(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte("unexpected"))
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+	req := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	req.Header.Set("Range", "bytes=0-10")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusNotImplemented, w.Code)
+	require.Equal(t, "none", w.Header().Get("Accept-Ranges"))
+	require.Zero(t, requests)
 }
