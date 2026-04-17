@@ -314,6 +314,39 @@ func TestHandlerFetchConditionalGetForwardsValidatorsOnMiss(t *testing.T) {
 	require.Equal(t, 1, requests)
 }
 
+func TestHandlerFetchConditionalGetWarmsCacheOnMiss(t *testing.T) {
+	requests := 0
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			require.Equal(t, `"stale-etag"`, r.Header.Get("If-None-Match"))
+		}
+		w.Header().Set("ETag", `"fresh-etag"`)
+		_, _ = w.Write([]byte("fresh-body"))
+	}))
+	defer upstream.Close()
+
+	h := newTestHandler(t, upstream.Client(), WithAllowedHosts([]string{upstream.Listener.Addr().String()}))
+
+	conditionalReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	conditionalReq.Header.Set("If-None-Match", `"stale-etag"`)
+	conditionalRes := httptest.NewRecorder()
+	h.ServeHTTP(conditionalRes, conditionalReq)
+
+	require.Equal(t, http.StatusOK, conditionalRes.Code)
+	require.Equal(t, "fresh-body", conditionalRes.Body.String())
+	require.Equal(t, `"fresh-etag"`, conditionalRes.Header().Get("ETag"))
+
+	cachedReq := httptest.NewRequest(http.MethodGet, "/"+upstream.Listener.Addr().String()+"/tool.tar.gz", nil)
+	cachedRes := httptest.NewRecorder()
+	h.ServeHTTP(cachedRes, cachedReq)
+
+	require.Equal(t, http.StatusOK, cachedRes.Code)
+	require.Equal(t, "fresh-body", cachedRes.Body.String())
+	require.Equal(t, `"fresh-etag"`, cachedRes.Header().Get("ETag"))
+	require.Equal(t, 1, requests)
+}
+
 func TestHandlerFetchRejectsRangeRequests(t *testing.T) {
 	requests := 0
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

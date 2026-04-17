@@ -234,14 +234,28 @@ func (h *Handler) proxyConditionalMiss(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 
-	h.copyHeaders(w, resp.Header, 0)
 	if r.Method == http.MethodHead {
+		h.copyHeaders(w, resp.Header, 0)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
-	if _, err := io.Copy(w, resp.Body); err != nil {
-		logger.Error("failed to stream conditional upstream response", "error", err)
+	if _, err := h.cacheResponse(r.Context(), upstream.String(), resp); err != nil {
+		logger.Error("failed to cache conditional upstream response", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	entry, err := h.index.Get(r.Context(), upstream.String())
+	if err != nil {
+		logger.Error("cache lookup after conditional download failed", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if _, err := h.serveCached(w, r, entry, logger); err != nil {
+		logger.Error("failed to serve freshly cached conditional resource", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
 }
 
@@ -262,6 +276,11 @@ func (h *Handler) downloadAndCache(ctx context.Context, upstreamURL string, allo
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	return h.cacheResponse(ctx, upstreamURL, resp)
+}
+
+func (h *Handler) cacheResponse(ctx context.Context, upstreamURL string, resp *http.Response) (*download.Result, error) {
 
 	tmpFile, err := os.CreateTemp("", "content-cache-fetch-*")
 	if err != nil {
