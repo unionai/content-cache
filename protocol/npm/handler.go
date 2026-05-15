@@ -41,9 +41,9 @@ type Handler struct {
 	downloader *download.Downloader
 
 	// Lifecycle management for background goroutines
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
+	wg             sync.WaitGroup
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // HandlerOption configures a Handler.
@@ -81,15 +81,15 @@ func WithDownloader(dl *download.Downloader) HandlerOption {
 
 // NewHandler creates a new NPM registry handler.
 func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler {
-	ctx, cancel := context.WithCancel(context.Background())
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	defaultRouter, _ := NewRouter(nil, WithFallback(NewUpstream()))
 	h := &Handler{
-		index:  index,
-		store:  store,
-		router: defaultRouter,
-		logger: slog.Default(),
-		ctx:    ctx,
-		cancel: cancel,
+		index:          index,
+		store:          store,
+		router:         defaultRouter,
+		logger:         slog.Default(),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -99,7 +99,7 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 
 // Close shuts down the handler and waits for background operations to complete.
 func (h *Handler) Close() {
-	h.cancel()
+	h.shutdownCancel()
 	h.wg.Wait()
 }
 
@@ -186,17 +186,15 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request, name st
 
 	// Cache the full URL-rewritten bytes asynchronously. We always cache the
 	// full form so that abbreviated and full requests share one cache entry.
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
-		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
+	h.wg.Go(func() {
+		cacheCtx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
 		defer cancel()
 		if err := h.index.PutPackageMetadata(cacheCtx, name, encoded); err != nil {
 			logger.Error("failed to cache metadata", "error", err)
 		} else {
 			logger.Debug("cached metadata")
 		}
-	}()
+	})
 
 	// Abbreviate only for the response, never for the cached copy.
 	response := encoded
@@ -576,15 +574,12 @@ func (h *Handler) handleTarballDirect(w http.ResponseWriter, r *http.Request, pa
 
 // startBackgroundCacheWithIntegrity starts a background caching operation with integrity info.
 func (h *Handler) startBackgroundCacheWithIntegrity(packageName, version string, hash contentcache.Hash, size int64, tmpPath, shasum, integrity string, logger *slog.Logger) {
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
-
-		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
+	h.wg.Go(func() {
+		ctx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
 		defer cancel()
 
 		h.cacheTarballWithIntegrity(ctx, packageName, version, hash, size, tmpPath, shasum, integrity, logger)
-	}()
+	})
 }
 
 // cacheTarballWithIntegrity stores a tarball in the cache from a temp file with integrity info.

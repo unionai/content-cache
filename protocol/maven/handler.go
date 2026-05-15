@@ -59,9 +59,9 @@ type Handler struct {
 	metadataTTL time.Duration
 
 	// Lifecycle management for background goroutines
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
+	wg             sync.WaitGroup
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // HandlerOption configures a Handler.
@@ -97,15 +97,15 @@ func WithMetadataTTL(ttl time.Duration) HandlerOption {
 
 // NewHandler creates a new Maven repository handler.
 func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler {
-	ctx, cancel := context.WithCancel(context.Background())
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	h := &Handler{
-		index:       index,
-		store:       store,
-		upstream:    NewUpstream(),
-		logger:      slog.Default(),
-		metadataTTL: defaultMetadataTTL,
-		ctx:         ctx,
-		cancel:      cancel,
+		index:          index,
+		store:          store,
+		upstream:       NewUpstream(),
+		logger:         slog.Default(),
+		metadataTTL:    defaultMetadataTTL,
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -115,7 +115,7 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 
 // Close shuts down the handler and waits for background operations to complete.
 func (h *Handler) Close() {
-	h.cancel()
+	h.shutdownCancel()
 	h.wg.Wait()
 }
 
@@ -312,7 +312,7 @@ func (h *Handler) handleMetadata(w http.ResponseWriter, r *http.Request, groupID
 
 	// Cache metadata asynchronously
 	h.wg.Go(func() {
-		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
+		cacheCtx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
 		defer cancel()
 		meta := &CachedMetadata{
 			GroupID:    groupID,
@@ -692,7 +692,7 @@ func (h *Handler) handleArtifactChecksum(w http.ResponseWriter, r *http.Request,
 // startBackgroundCache starts a background caching operation.
 func (h *Handler) startBackgroundCache(coord ArtifactCoordinate, hash contentcache.Hash, size int64, tmpPath string, checksums Checksums, logger *slog.Logger) {
 	h.wg.Go(func() {
-		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
+		ctx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
 		defer cancel()
 
 		h.cacheArtifact(ctx, coord, hash, size, tmpPath, checksums, logger)

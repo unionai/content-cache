@@ -34,9 +34,9 @@ type Handler struct {
 	downloader *download.Downloader
 
 	// Lifecycle management for background goroutines
-	wg     sync.WaitGroup
-	ctx    context.Context
-	cancel context.CancelFunc
+	wg             sync.WaitGroup
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
 }
 
 // HandlerOption configures a Handler.
@@ -65,14 +65,14 @@ func WithDownloader(dl *download.Downloader) HandlerOption {
 
 // NewHandler creates a new GOPROXY handler.
 func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler {
-	ctx, cancel := context.WithCancel(context.Background())
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	h := &Handler{
-		index:    index,
-		store:    store,
-		upstream: NewUpstream(),
-		logger:   slog.Default(),
-		ctx:      ctx,
-		cancel:   cancel,
+		index:          index,
+		store:          store,
+		upstream:       NewUpstream(),
+		logger:         slog.Default(),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -82,7 +82,7 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 
 // Close shuts down the handler and waits for background operations to complete.
 func (h *Handler) Close() {
-	h.cancel()
+	h.shutdownCancel()
 	h.wg.Wait()
 }
 
@@ -90,7 +90,7 @@ func (h *Handler) Close() {
 func (h *Handler) startBackgroundCache(modulePath, version string, logger *slog.Logger) {
 	h.wg.Go(func() {
 		// Create a context with timeout, derived from handler's context
-		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
+		ctx, cancel := context.WithTimeout(h.shutdownCtx, cacheTimeout)
 		defer cancel()
 
 		h.cacheModuleVersion(ctx, modulePath, version, logger)
