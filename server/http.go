@@ -115,6 +115,11 @@ type Config struct {
 	// GitAllowedHosts is the allowlist of permitted upstream Git hosts.
 	GitAllowedHosts []string
 
+	// GitUpstreamAuthTrustedSingleTenant allows GitHub App upstream Git auth
+	// without repo-level caller authorization. Only set this for trusted
+	// single-tenant deployments.
+	GitUpstreamAuthTrustedSingleTenant bool
+
 	// FetchAllowedHosts is the allowlist of permitted upstream hosts for /fetch.
 	FetchAllowedHosts []string
 
@@ -229,6 +234,36 @@ func openMetaBackend(cfg Config) (metadb.MetaDB, func() (s3fifo.Queues, error), 
 	return boltDB, makeQueues, nil
 }
 
+func validateGitUpstreamAuth(cfg Config) error {
+	if cfg.Credentials == nil || cfg.Credentials.Git == nil {
+		return nil
+	}
+
+	hasGitHubAppRoute := false
+	for i, route := range cfg.Credentials.Git.Routes {
+		if route.GitHubApp == nil {
+			continue
+		}
+
+		hasGitHubAppRoute = true
+		if route.Username != "" || route.Password != "" {
+			return fmt.Errorf("git route %d: github_app cannot be combined with username/password", i)
+		}
+		if route.Match.Any {
+			return fmt.Errorf("git route %d: github_app cannot be used on catch-all routes", i)
+		}
+		if !strings.HasPrefix(strings.ToLower(route.Match.RepoPrefix), "github.com/") {
+			return fmt.Errorf("git route %d: github_app only supports github.com repo_prefix values", i)
+		}
+	}
+
+	if hasGitHubAppRoute && !cfg.GitUpstreamAuthTrustedSingleTenant {
+		return fmt.Errorf("git github_app routes require repo-level caller authorization; set GitUpstreamAuthTrustedSingleTenant only for trusted single-tenant deployments")
+	}
+
+	return nil
+}
+
 // New creates a new server with the given configuration.
 func New(cfg Config) (*Server, error) {
 	if cfg.AuthToken != "" && cfg.OIDCValidator != nil {
@@ -245,6 +280,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.UpstreamGoProxy == "" {
 		cfg.UpstreamGoProxy = goproxy.DefaultUpstreamURL
+	}
+	if err := validateGitUpstreamAuth(cfg); err != nil {
+		return nil, err
 	}
 
 	// Initialize storage backend
@@ -628,12 +666,23 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Credentials != nil && cfg.Credentials.Git != nil && len(cfg.Credentials.Git.Routes) > 0 {
 		// Build Git router from credentials file routes.
 		gitRoutes := make([]git.Route, 0, len(cfg.Credentials.Git.Routes))
-		for _, r := range cfg.Credentials.Git.Routes {
+		for i, r := range cfg.Credentials.Git.Routes {
 			upOpts := []git.UpstreamOption{
 				git.WithUpstreamLogger(cfg.Logger.With("component", "git")),
 				git.WithHTTPClient(gitHTTPClient),
 			}
-			if r.Username != "" {
+			if r.GitHubApp != nil {
+				githubAppAuth, err := git.NewGitHubAppAuth(git.GitHubAppAuthConfig{
+					AppID:          r.GitHubApp.AppID,
+					InstallationID: r.GitHubApp.InstallationID,
+					PrivateKey:     r.GitHubApp.PrivateKey,
+					TokenScope:     r.GitHubApp.TokenScope,
+				})
+				if err != nil {
+					return nil, fmt.Errorf("creating git github_app auth for route %d: %w", i, err)
+				}
+				upOpts = append(upOpts, git.WithBasicAuthProvider(githubAppAuth))
+			} else if r.Username != "" {
 				upOpts = append(upOpts, git.WithBasicAuth(r.Username, r.Password))
 			}
 			gitRoutes = append(gitRoutes, git.Route{

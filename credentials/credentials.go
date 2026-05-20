@@ -66,15 +66,25 @@ type GitAuthConfig struct {
 
 // GitRoute defines a single Git routing rule.
 type GitRoute struct {
-	Match    GitRouteMatch `json:"match"`
-	Username string        `json:"username,omitempty"`
-	Password string        `json:"password,omitempty"`
+	Match     GitRouteMatch    `json:"match"`
+	Username  string           `json:"username,omitempty"`
+	Password  string           `json:"password,omitempty"`
+	GitHubApp *GitHubAppConfig `json:"github_app,omitempty"`
 }
 
 // GitRouteMatch defines the matching criteria for a Git route.
 type GitRouteMatch struct {
 	RepoPrefix string `json:"repo_prefix,omitempty"`
 	Any        bool   `json:"any,omitempty"`
+}
+
+// GitHubAppConfig configures GitHub App installation token authentication for
+// upstream Git requests.
+type GitHubAppConfig struct {
+	AppID          string `json:"app_id"`
+	InstallationID string `json:"installation_id"`
+	PrivateKey     string `json:"private_key"`
+	TokenScope     string `json:"token_scope"`
 }
 
 // SecretProvider resolves a secret reference to its value.

@@ -427,6 +427,7 @@ OCI registry credentials (username/password) are configured via the credentials 
 |------|---------------------|---------|-------------|
 | `--git-allowed-hosts` | `GIT_ALLOWED_HOSTS` | | Comma-separated list of allowed Git upstream hosts (e.g., `github.com,gitlab.com`) |
 | `--git-max-request-body` | `GIT_MAX_REQUEST_BODY` | `104857600` | Maximum git-upload-pack request body size in bytes (100MB) |
+| `--git-upstream-auth-trusted-single-tenant` | `GIT_UPSTREAM_AUTH_TRUSTED_SINGLE_TENANT` | `false` | Allow GitHub App upstream Git credentials without repo-level caller authorization. Only safe for trusted single-tenant deployments. |
 
 ### HTTP Build Cache Options (sccache / Gradle)
 
@@ -588,6 +589,15 @@ The credentials file is a Go `text/template` that produces JSON. Template functi
         "password": {{ env "GIT_PAT" | json }}
       },
       {
+        "match": { "repo_prefix": "github.com/orgB/" },
+        "github_app": {
+          "app_id": "12345",
+          "installation_id": "67890",
+          "private_key": {{ file "/run/secrets/github-app-private-key.pem" | json }},
+          "token_scope": "requested_repo"
+        }
+      },
+      {
         "match": { "any": true }
       }
     ]
@@ -613,7 +623,7 @@ The credentials file is a Go `text/template` that produces JSON. Template functi
 ### Routing Rules
 
 - **NPM**: Routes match by package scope (e.g., `@mycompany`). The last route must have `"any": true` as a catch-all. Scopes must start with `@` and must not be duplicated.
-- **Git**: Routes match by repo prefix (e.g., `github.com/orgA/`). Prefixes must end with `/` to prevent ambiguous matching. The last route must have `"any": true` as a catch-all.
+- **Git**: Routes match by repo prefix (e.g., `github.com/orgA/`). Prefixes must end with `/` to prevent ambiguous matching. The last route must have `"any": true` as a catch-all. A route may use either static `username`/`password` credentials or a `github_app` block, not both. GitHub App routes only support `github.com` and request installation tokens scoped to the requested repo with `token_scope: "requested_repo"`.
 - **OCI**: Uses prefix-based routing (e.g., `docker-hub`, `ghcr`). Each registry entry defines its own upstream URL and optional credentials.
 
 All sections are optional — omit any protocol section to use the default upstream with no auth.
