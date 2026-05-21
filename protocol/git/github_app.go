@@ -61,13 +61,24 @@ type gitHubAppCachedToken struct {
 // GitHubAppAuthOption configures GitHub App authentication.
 type GitHubAppAuthOption func(*GitHubAppAuth)
 
-func withGitHubAppAPIURL(apiURL string) GitHubAppAuthOption {
+// WithGitHubAppAPIURL sets the GitHub API base URL used to mint installation
+// tokens. Git remotes are still restricted to github.com.
+func WithGitHubAppAPIURL(apiURL string) GitHubAppAuthOption {
 	return func(a *GitHubAppAuth) {
 		a.apiURL = strings.TrimRight(apiURL, "/")
 	}
 }
 
-func withGitHubAppClock(now func() time.Time) GitHubAppAuthOption {
+// WithGitHubAppHTTPClient sets the HTTP client used for GitHub API calls.
+func WithGitHubAppHTTPClient(client *http.Client) GitHubAppAuthOption {
+	return func(a *GitHubAppAuth) {
+		a.client = client
+	}
+}
+
+// WithGitHubAppClock sets the clock used for JWT claims and token cache
+// freshness checks.
+func WithGitHubAppClock(now func() time.Time) GitHubAppAuthOption {
 	return func(a *GitHubAppAuth) {
 		a.now = now
 	}
