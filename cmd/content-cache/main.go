@@ -50,8 +50,9 @@ type ServeCmd struct {
 	MavenUpstream    []string `kong:"name='maven-upstream',env='MAVEN_UPSTREAM',help='Upstream Maven repository URLs, tried in order on 404 (default: repo.maven.apache.org/maven2). Repeat the flag or pass a comma-separated list to add fallbacks, e.g. --maven-upstream=https://repo.maven.apache.org/maven2,https://repo.clojars.org',group='Upstream'"`
 	RubyGemsUpstream string   `kong:"name='rubygems-upstream',env='RUBYGEMS_UPSTREAM',help='Upstream RubyGems registry URL (default: rubygems.org)',group='Upstream'"`
 
-	GitAllowedHosts       []string `kong:"name='git-allowed-hosts',env='GIT_ALLOWED_HOSTS',help='Comma-separated list of allowed Git upstream hosts (e.g. github.com,gitlab.com)',group='Git'"`
-	GitMaxRequestBodySize int64    `kong:"name='git-max-request-body',default='104857600',env='GIT_MAX_REQUEST_BODY',help='Maximum git-upload-pack request body size in bytes (default: 100MB)',group='Git'"`
+	GitAllowedHosts                    []string `kong:"name='git-allowed-hosts',env='GIT_ALLOWED_HOSTS',help='Comma-separated list of allowed Git upstream hosts (e.g. github.com,gitlab.com)',group='Git'"`
+	GitMaxRequestBodySize              int64    `kong:"name='git-max-request-body',default='104857600',env='GIT_MAX_REQUEST_BODY',help='Maximum git-upload-pack request body size in bytes (default: 100MB)',group='Git'"`
+	GitUpstreamAuthTrustedSingleTenant bool     `kong:"name='git-upstream-auth-trusted-single-tenant',env='GIT_UPSTREAM_AUTH_TRUSTED_SINGLE_TENANT',help='Allow GitHub App upstream Git credentials without repo-level caller authorization; only safe for trusted single-tenant deployments',group='Git'"`
 
 	FetchAllowedHosts []string `kong:"name='fetch-allowed-hosts',env='FETCH_ALLOWED_HOSTS',help='Comma-separated list of allowed upstream hosts for the generic /fetch cache (e.g. raw.githubusercontent.com,releases.hashicorp.com)',group='Fetch'"`
 
@@ -263,39 +264,40 @@ func (cmd *ServeCmd) Run() error {
 
 	// Create server
 	cfg := server.Config{
-		Address:               cmd.ListenAddress,
-		StoragePath:           cmd.Storage,
-		TLSCertFile:           cmd.TLSCertFile,
-		TLSKeyFile:            cmd.TLSKeyFile,
-		AuthToken:             authToken,
-		OIDCValidator:         oidcValidator,
-		Credentials:           creds,
-		UpstreamGoProxy:       cmd.GoUpstream,
-		GoProxyMetadataTTL:    cmd.GoProxyMetadataTTL,
-		UpstreamNPMRegistry:   cmd.NPMUpstream,
-		NPMMetadataTTL:        cmd.NPMMetadataTTL,
-		UpstreamOCIRegistry:   cmd.OCIUpstream,
-		OCIPrefix:             cmd.OCIPrefix,
-		OCITagTTL:             cmd.OCITagTTL,
-		UpstreamPyPI:          cmd.PyPIUpstream,
-		PyPIMetadataTTL:       cmd.PyPIMetadataTTL,
-		UpstreamMaven:         cmd.MavenUpstream,
-		MavenUserAgent:        fmt.Sprintf("content-cache/%s (+https://github.com/buildkite/content-cache)", version),
-		MavenMetadataTTL:      cmd.MavenMetadataTTL,
-		UpstreamRubyGems:      cmd.RubyGemsUpstream,
-		RubyGemsMetadataTTL:   cmd.RubyGemsMetadataTTL,
-		GitAllowedHosts:       cmd.GitAllowedHosts,
-		FetchAllowedHosts:     cmd.FetchAllowedHosts,
-		FetchMetadataTTL:      cmd.FetchMetadataTTL,
-		HTTPCacheTTL:          cmd.HTTPCacheTTL,
-		GitMaxRequestBodySize: cmd.GitMaxRequestBodySize,
-		BlobRetention:         cmd.BlobRetention,
-		CacheMaxSize:          cmd.CacheMaxSize,
-		ExpiryCheckInterval:   cmd.ExpiryCheckInterval,
-		GCInterval:            cmd.GCInterval,
-		GCStartupDelay:        cmd.GCStartupDelay,
-		MetadataDSN:           cmd.MetadataDSN,
-		Logger:                logger,
+		Address:                            cmd.ListenAddress,
+		StoragePath:                        cmd.Storage,
+		TLSCertFile:                        cmd.TLSCertFile,
+		TLSKeyFile:                         cmd.TLSKeyFile,
+		AuthToken:                          authToken,
+		OIDCValidator:                      oidcValidator,
+		Credentials:                        creds,
+		UpstreamGoProxy:                    cmd.GoUpstream,
+		GoProxyMetadataTTL:                 cmd.GoProxyMetadataTTL,
+		UpstreamNPMRegistry:                cmd.NPMUpstream,
+		NPMMetadataTTL:                     cmd.NPMMetadataTTL,
+		UpstreamOCIRegistry:                cmd.OCIUpstream,
+		OCIPrefix:                          cmd.OCIPrefix,
+		OCITagTTL:                          cmd.OCITagTTL,
+		UpstreamPyPI:                       cmd.PyPIUpstream,
+		PyPIMetadataTTL:                    cmd.PyPIMetadataTTL,
+		UpstreamMaven:                      cmd.MavenUpstream,
+		MavenUserAgent:                     fmt.Sprintf("content-cache/%s (+https://github.com/buildkite/content-cache)", version),
+		MavenMetadataTTL:                   cmd.MavenMetadataTTL,
+		UpstreamRubyGems:                   cmd.RubyGemsUpstream,
+		RubyGemsMetadataTTL:                cmd.RubyGemsMetadataTTL,
+		GitAllowedHosts:                    cmd.GitAllowedHosts,
+		GitUpstreamAuthTrustedSingleTenant: cmd.GitUpstreamAuthTrustedSingleTenant,
+		FetchAllowedHosts:                  cmd.FetchAllowedHosts,
+		FetchMetadataTTL:                   cmd.FetchMetadataTTL,
+		HTTPCacheTTL:                       cmd.HTTPCacheTTL,
+		GitMaxRequestBodySize:              cmd.GitMaxRequestBodySize,
+		BlobRetention:                      cmd.BlobRetention,
+		CacheMaxSize:                       cmd.CacheMaxSize,
+		ExpiryCheckInterval:                cmd.ExpiryCheckInterval,
+		GCInterval:                         cmd.GCInterval,
+		GCStartupDelay:                     cmd.GCStartupDelay,
+		MetadataDSN:                        cmd.MetadataDSN,
+		Logger:                             logger,
 	}
 
 	srv, err := server.New(cfg)

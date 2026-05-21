@@ -485,6 +485,49 @@ func TestHandlerUploadPackCacheHitSkipsUpstream(t *testing.T) {
 	require.Equal(t, int32(1), fetchCount.Load(), "cache hit should not call upstream")
 }
 
+func TestHandlerUploadPackCacheHitRequiresCurrentAuth(t *testing.T) {
+	var fetchCount atomic.Int32
+	upstreamSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/git-upload-pack") {
+			fetchCount.Add(1)
+			w.Header().Set("Content-Type", ContentTypeUploadPackResult)
+			_, _ = w.Write([]byte(fakeUploadPackBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstreamSrv.Close()
+
+	h, cleanup := newTestHandlerWithTransport(t, upstreamSrv)
+	defer cleanup()
+
+	authProvider := &toggleBasicAuthProvider{}
+	authProvider.allow.Store(true)
+	upstream := NewUpstream(
+		WithHTTPClient(redirectClient(upstreamSrv.URL)),
+		WithBasicAuthProvider(authProvider),
+	)
+	router, err := NewRouter(nil, WithFallback(upstream))
+	require.NoError(t, err)
+	h.router = router
+
+	body := []byte("0032want cached-auth\n00000009done\n")
+
+	req := httptest.NewRequest(http.MethodPost, "/github.com/user/repo.git/git-upload-pack", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, int32(1), fetchCount.Load())
+
+	authProvider.allow.Store(false)
+	req2 := httptest.NewRequest(http.MethodPost, "/github.com/user/repo.git/git-upload-pack", bytes.NewReader(body))
+	w2 := httptest.NewRecorder()
+	h.ServeHTTP(w2, req2)
+	require.Equal(t, http.StatusBadGateway, w2.Code)
+	require.Equal(t, int32(1), fetchCount.Load(), "auth failure on cache hit must not refetch upstream")
+	require.NotContains(t, w2.Body.String(), fakeUploadPackBody)
+}
+
 func TestHandlerUpstreamErrors(t *testing.T) {
 	t.Run("upstream 404 returns 404", func(t *testing.T) {
 		notFoundUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -627,6 +670,17 @@ func redirectClient(targetURL string) *http.Client {
 	return &http.Client{
 		Transport: &rewriteTransport{target: targetURL},
 	}
+}
+
+type toggleBasicAuthProvider struct {
+	allow atomic.Bool
+}
+
+func (p *toggleBasicAuthProvider) BasicAuth(context.Context, RepoRef) (string, string, error) {
+	if !p.allow.Load() {
+		return "", "", fmt.Errorf("auth unavailable")
+	}
+	return "x-access-token", "token", nil
 }
 
 type rewriteTransport struct {

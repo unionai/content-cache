@@ -262,3 +262,38 @@ func TestResolveReader_PartialCredentials(t *testing.T) {
 	require.NotNil(t, creds.Git)
 	require.Len(t, creds.Git.Routes, 2)
 }
+
+func TestResolveReader_GitHubAppCredentials(t *testing.T) {
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----")
+
+	input := `{
+		"git": {
+			"routes": [
+				{
+					"match": {"repo_prefix": "github.com/buildkite/"},
+					"github_app": {
+						"app_id": "12345",
+						"installation_id": "67890",
+						"private_key": {{ env "GITHUB_APP_PRIVATE_KEY" | json }},
+						"token_scope": "requested_repo"
+					}
+				},
+				{
+					"match": {"any": true}
+				}
+			]
+		}
+	}`
+
+	r := NewResolver()
+	creds, err := r.ResolveReader(context.Background(), strings.NewReader(input))
+	require.NoError(t, err)
+	require.NotNil(t, creds.Git)
+	require.Len(t, creds.Git.Routes, 2)
+	require.Equal(t, "github.com/buildkite/", creds.Git.Routes[0].Match.RepoPrefix)
+	require.NotNil(t, creds.Git.Routes[0].GitHubApp)
+	require.Equal(t, "12345", creds.Git.Routes[0].GitHubApp.AppID)
+	require.Equal(t, "67890", creds.Git.Routes[0].GitHubApp.InstallationID)
+	require.Equal(t, "requested_repo", creds.Git.Routes[0].GitHubApp.TokenScope)
+	require.Contains(t, creds.Git.Routes[0].GitHubApp.PrivateKey, "BEGIN PRIVATE KEY")
+}

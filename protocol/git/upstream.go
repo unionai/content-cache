@@ -10,14 +10,27 @@ import (
 
 // Upstream fetches from upstream Git repositories over HTTPS.
 type Upstream struct {
-	client   *http.Client
-	logger   *slog.Logger
-	username string
-	password string
+	client       *http.Client
+	logger       *slog.Logger
+	authProvider BasicAuthProvider
 }
 
 // UpstreamOption configures an Upstream.
 type UpstreamOption func(*Upstream)
+
+// BasicAuthProvider resolves upstream Basic Auth credentials for a repository.
+type BasicAuthProvider interface {
+	BasicAuth(ctx context.Context, repo RepoRef) (username, password string, err error)
+}
+
+type staticBasicAuthProvider struct {
+	username string
+	password string
+}
+
+func (p staticBasicAuthProvider) BasicAuth(context.Context, RepoRef) (string, string, error) {
+	return p.username, p.password, nil
+}
 
 // WithHTTPClient sets a custom HTTP client.
 func WithHTTPClient(client *http.Client) UpstreamOption {
@@ -38,17 +51,45 @@ func WithUpstreamLogger(logger *slog.Logger) UpstreamOption {
 // GitLab tokens, and Bitbucket app passwords.
 func WithBasicAuth(username, password string) UpstreamOption {
 	return func(u *Upstream) {
-		u.username = username
-		u.password = password
+		u.authProvider = staticBasicAuthProvider{username: username, password: password}
 	}
+}
+
+// WithBasicAuthProvider sets a per-request upstream Basic Auth provider.
+func WithBasicAuthProvider(provider BasicAuthProvider) UpstreamOption {
+	return func(u *Upstream) {
+		u.authProvider = provider
+	}
+}
+
+func (u *Upstream) resolveBasicAuth(ctx context.Context, repo RepoRef) (string, string, error) {
+	if u.authProvider == nil {
+		return "", "", nil
+	}
+
+	username, password, err := u.authProvider.BasicAuth(ctx, repo)
+	if err != nil {
+		return "", "", fmt.Errorf("resolving upstream auth: %w", err)
+	}
+	return username, password, nil
+}
+
+func (u *Upstream) checkAuth(ctx context.Context, repo RepoRef) error {
+	_, _, err := u.resolveBasicAuth(ctx, repo)
+	return err
 }
 
 // setAuth sets Basic Auth on the request if credentials are configured.
 // Auth is applied if username is set (password may be empty, which is valid for some providers).
-func (u *Upstream) setAuth(req *http.Request) {
-	if u.username != "" {
-		req.SetBasicAuth(u.username, u.password)
+func (u *Upstream) setAuth(ctx context.Context, repo RepoRef, req *http.Request) error {
+	username, password, err := u.resolveBasicAuth(ctx, repo)
+	if err != nil {
+		return err
 	}
+	if username != "" {
+		req.SetBasicAuth(username, password)
+	}
+	return nil
 }
 
 // NewUpstream creates a new upstream Git client.
@@ -78,7 +119,9 @@ func (u *Upstream) FetchInfoRefs(ctx context.Context, repo RepoRef, gitProtocol 
 	if gitProtocol != "" {
 		req.Header.Set("Git-Protocol", gitProtocol)
 	}
-	u.setAuth(req)
+	if err := u.setAuth(ctx, repo, req); err != nil {
+		return nil, "", err
+	}
 
 	resp, err := u.client.Do(req)
 	if err != nil {
@@ -113,7 +156,9 @@ func (u *Upstream) FetchUploadPack(ctx context.Context, repo RepoRef, gitProtoco
 	if gitProtocol != "" {
 		req.Header.Set("Git-Protocol", gitProtocol)
 	}
-	u.setAuth(req)
+	if err := u.setAuth(ctx, repo, req); err != nil {
+		return nil, err
+	}
 
 	u.logger.Debug("sending upload-pack request to upstream",
 		"url", url,

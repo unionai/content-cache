@@ -382,6 +382,14 @@ func (h *Handler) handleUploadPack(w http.ResponseWriter, r *http.Request, repo 
 			logger.Error("cache store check failed", "hash", cached.ResponseHash.ShortString(), "error", storeErr)
 		}
 		if exists {
+			upstream := h.router.Match(repo)
+			if err := upstream.checkAuth(ctx, repo); err != nil {
+				logger.Error("upstream auth failed for cached pack", "error", err)
+				_ = activeBodyFile.Close()
+				http.Error(w, "upstream error", http.StatusBadGateway)
+				return
+			}
+
 			logger.Debug("cache hit", "hash", cached.ResponseHash.ShortString())
 			telemetry.SetCacheResult(r, telemetry.CacheHit)
 			_ = activeBodyFile.Close()
