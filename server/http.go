@@ -21,6 +21,7 @@ import (
 	"github.com/buildkite/content-cache/protocol/fetch"
 	"github.com/buildkite/content-cache/protocol/git"
 	"github.com/buildkite/content-cache/protocol/goproxy"
+	"github.com/buildkite/content-cache/protocol/httpcache"
 	"github.com/buildkite/content-cache/protocol/maven"
 	"github.com/buildkite/content-cache/protocol/npm"
 	"github.com/buildkite/content-cache/protocol/oci"
@@ -129,6 +130,10 @@ type Config struct {
 	// Default: 24h (entries are content-addressed and effectively immutable)
 	BuildCacheTTL time.Duration
 
+	// HTTPCacheTTL is how long to retain sccache/Gradle HTTP build cache entries.
+	// Default: 24h
+	HTTPCacheTTL time.Duration
+
 	// SumDBName is the name of the checksum database to proxy.
 	// Default: sum.golang.org
 	SumDBName string
@@ -201,6 +206,8 @@ type Server struct {
 	sumdb           *goproxy.SumdbHandler
 	buildcacheIndex *buildcache.Index
 	buildcache      *buildcache.Handler
+	httpcacheIndex  *httpcache.Index
+	httpcache       *httpcache.Handler
 	metaDB          metadb.MetaDB
 	gcManager       *gc.Manager
 	s3fifoManager   *s3fifo.Manager
@@ -717,6 +724,22 @@ func New(cfg Config) (*Server, error) {
 		buildcache.WithLogger(cfg.Logger.With("component", "buildcache")),
 	)
 
+	// Initialize HTTP cache components (sccache / Gradle HTTP Build Cache).
+	httpCacheTTL := cfg.HTTPCacheTTL
+	if httpCacheTTL == 0 {
+		httpCacheTTL = 24 * time.Hour
+	}
+	httpcacheEntryIndex, err := metadb.NewEnvelopeIndex(metaDB, "httpcache", "entry", httpCacheTTL, withCodec)
+	if err != nil {
+		return nil, fmt.Errorf("creating httpcache entry index: %w", err)
+	}
+	httpcacheIdx := httpcache.NewIndex(httpcacheEntryIndex)
+	httpcacheHndlr := httpcache.NewHandler(
+		httpcacheIdx,
+		cafsStore,
+		httpcache.WithLogger(cfg.Logger.With("component", "httpcache")),
+	)
+
 	s := &Server{
 		config:          cfg,
 		logger:          cfg.Logger,
@@ -742,6 +765,8 @@ func New(cfg Config) (*Server, error) {
 		sumdb:           sumdbHandler,
 		buildcacheIndex: buildcacheIdx,
 		buildcache:      buildcacheHndlr,
+		httpcacheIndex:  httpcacheIdx,
+		httpcache:       httpcacheHndlr,
 		metaDB:          metaDB,
 		gcManager:       gcManager,
 		s3fifoManager:   s3fifoMgr,
@@ -847,6 +872,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	buildcacheHndlr := withProtocol("buildcache", http.StripPrefix("/buildcache", s.buildcache))
 	mux.Handle("GET /buildcache/", buildcacheHndlr)
 	mux.Handle("PUT /buildcache/", buildcacheHndlr)
+
+	// HTTP cache endpoints (sccache / Gradle HTTP Build Cache).
+	// The method-less pattern is necessary — method-qualified patterns cause Go's mux
+	// to auto-405 any method not explicitly registered (e.g. PROPFIND, MKCOL from sccache's
+	// WebDAV mode) before the request reaches our handler.
+	httpcacheHndlr := withProtocol("httpcache", http.StripPrefix("/httpcache", s.httpcache))
+	mux.Handle("/httpcache/", httpcacheHndlr)
 
 }
 
@@ -1092,6 +1124,8 @@ func deriveProtocol(p string) string {
 		return "goproxy"
 	case strings.HasPrefix(p, "/buildcache/"):
 		return "buildcache"
+	case strings.HasPrefix(p, "/httpcache/"):
+		return "httpcache"
 	case strings.HasPrefix(p, "/v2"):
 		return "oci"
 	default:
