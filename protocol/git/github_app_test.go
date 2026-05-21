@@ -92,7 +92,7 @@ func TestGitHubAppAuthBasicAuthRequestsRepoScopedToken(t *testing.T) {
 		InstallationID: "67890",
 		PrivateKey:     privateKeyPEM,
 		TokenScope:     GitHubAppTokenScopeRequestedRepo,
-	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	}, WithGitHubAppAPIURL(api.URL), WithGitHubAppClock(func() time.Time { return now }))
 	require.NoError(t, err)
 
 	username, password, err := auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
@@ -161,7 +161,7 @@ func TestGitHubAppAuthMintsDifferentRepoTokensConcurrently(t *testing.T) {
 		InstallationID: "67890",
 		PrivateKey:     privateKeyPEM,
 		TokenScope:     GitHubAppTokenScopeRequestedRepo,
-	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	}, WithGitHubAppAPIURL(api.URL), WithGitHubAppClock(func() time.Time { return now }))
 	require.NoError(t, err)
 
 	type authResult struct {
@@ -231,7 +231,7 @@ func TestGitHubAppAuthSharedMintSurvivesLeaderCancellation(t *testing.T) {
 		InstallationID: "67890",
 		PrivateKey:     privateKeyPEM,
 		TokenScope:     GitHubAppTokenScopeRequestedRepo,
-	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	}, WithGitHubAppAPIURL(api.URL), WithGitHubAppClock(func() time.Time { return now }))
 	require.NoError(t, err)
 
 	type authResult struct {
@@ -306,7 +306,7 @@ func TestGitHubAppAuthFallsBackToValidCachedTokenOnRefreshFailure(t *testing.T) 
 		InstallationID: "67890",
 		PrivateKey:     privateKeyPEM,
 		TokenScope:     GitHubAppTokenScopeRequestedRepo,
-	}, withGitHubAppAPIURL(api.URL), withGitHubAppClock(func() time.Time { return now }))
+	}, WithGitHubAppAPIURL(api.URL), WithGitHubAppClock(func() time.Time { return now }))
 	require.NoError(t, err)
 
 	_, password, err := auth.BasicAuth(context.Background(), RepoRef{Host: "github.com", RepoPath: "buildkite/content-cache"})
