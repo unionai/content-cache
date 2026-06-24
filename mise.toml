@@ -5,10 +5,10 @@ experimental = true
 lockfile = true
 
 [tools]
-go = "latest"
-golangci-lint = "latest"
+go = "1.26.4"
+golangci-lint = "2.12.2"
 "go:github.com/nikolaydubina/go-cover-treemap" = "1.5.1"
-goreleaser = "2.15.4"
+goreleaser = "2.16.0"
 
 [tasks.lint]
 description = "Run golangci-lint with the repository configuration"
