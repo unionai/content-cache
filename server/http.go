@@ -409,11 +409,11 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	// Initialize goproxy components using metadb EnvelopeIndex
-	goproxyModIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "mod", 24*time.Hour, withCodec)
+	goproxyModIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "mod", 0, withCodec)
 	if err != nil {
 		return nil, fmt.Errorf("creating goproxy mod index: %w", err)
 	}
-	goproxyInfoIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "info", 24*time.Hour, withCodec)
+	goproxyInfoIndex, err := metadb.NewEnvelopeIndex(metaDB, "goproxy", "info", 0, withCodec)
 	if err != nil {
 		return nil, fmt.Errorf("creating goproxy info index: %w", err)
 	}
