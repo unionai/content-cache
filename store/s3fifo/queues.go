@@ -192,6 +192,14 @@ func (q *BoltQueues) GhostAdd(hash string) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 
+		if oldSeq := ghostBucket.Get([]byte(hash)); oldSeq != nil {
+			oldSeqKey := make([]byte, len(oldSeq))
+			copy(oldSeqKey, oldSeq)
+			if err := seqBucket.Delete(oldSeqKey); err != nil {
+				return err
+			}
+		}
+
 		seq, err := seqBucket.NextSequence()
 		if err != nil {
 			return err
@@ -278,6 +286,14 @@ func (q *BoltQueues) GhostLen() (int, error) {
 func txPushHead(tx *bbolt.Tx, fwdName, revName []byte, hash string) error {
 	fwd := tx.Bucket(fwdName)
 	rev := tx.Bucket(revName)
+
+	if oldSeq := rev.Get([]byte(hash)); oldSeq != nil {
+		oldSeqKey := make([]byte, len(oldSeq))
+		copy(oldSeqKey, oldSeq)
+		if err := fwd.Delete(oldSeqKey); err != nil {
+			return err
+		}
+	}
 
 	seq, err := fwd.NextSequence()
 	if err != nil {

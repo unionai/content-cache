@@ -52,6 +52,29 @@ func TestPushHeadPopTailFIFO(t *testing.T) {
 	require.ErrorIs(t, err, ErrQueueEmpty)
 }
 
+func TestPushHeadExistingHashIsIdempotent(t *testing.T) {
+	q := newTestQueues(t)
+
+	require.NoError(t, q.PushHead(QueueSmall, "a"))
+	require.NoError(t, q.PushHead(QueueSmall, "b"))
+	require.NoError(t, q.PushHead(QueueSmall, "a"))
+
+	n, err := q.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "queue should contain one entry per hash")
+
+	got, err := q.PopTail(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, "b", got, "existing hash should move to the head without leaving stale FIFO entries")
+
+	got, err = q.PopTail(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, "a", got)
+
+	_, err = q.PopTail(QueueSmall)
+	require.ErrorIs(t, err, ErrQueueEmpty)
+}
+
 func TestPopTailEmptyQueue(t *testing.T) {
 	q := newTestQueues(t)
 	_, err := q.PopTail(QueueMain)
@@ -120,6 +143,28 @@ func TestGhostContainsAddRemove(t *testing.T) {
 	found, err = q.GhostContains("h1")
 	require.NoError(t, err)
 	require.False(t, found)
+}
+
+func TestGhostAddExistingHashIsIdempotent(t *testing.T) {
+	q := newTestQueues(t)
+
+	require.NoError(t, q.GhostAdd("h1"))
+	require.NoError(t, q.GhostAdd("h2"))
+	require.NoError(t, q.GhostAdd("h1"))
+
+	n, err := q.GhostLen()
+	require.NoError(t, err)
+	require.Equal(t, 2, n, "ghost queue should contain one entry per hash")
+
+	require.NoError(t, q.GhostTrimToMaxSize(1))
+
+	found, err := q.GhostContains("h1")
+	require.NoError(t, err)
+	require.True(t, found, "re-added hash should be treated as newest")
+
+	found, err = q.GhostContains("h2")
+	require.NoError(t, err)
+	require.False(t, found, "oldest ghost entry should be trimmed")
 }
 
 func TestGhostTrimToMaxSize(t *testing.T) {
