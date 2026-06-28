@@ -27,12 +27,19 @@ func newTestQueues(t *testing.T) *BoltQueues {
 	return q
 }
 
+func pushHead(t *testing.T, q Queues, queue, hash string) bool {
+	t.Helper()
+	replaced, err := q.PushHead(queue, hash)
+	require.NoError(t, err)
+	return replaced
+}
+
 func TestPushHeadPopTailFIFO(t *testing.T) {
 	q := newTestQueues(t)
 
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
-	require.NoError(t, q.PushHead(QueueSmall, "b"))
-	require.NoError(t, q.PushHead(QueueSmall, "c"))
+	require.False(t, pushHead(t, q, QueueSmall, "a"))
+	require.False(t, pushHead(t, q, QueueSmall, "b"))
+	require.False(t, pushHead(t, q, QueueSmall, "c"))
 
 	// Tail is oldest (first inserted).
 	got, err := q.PopTail(QueueSmall)
@@ -55,9 +62,9 @@ func TestPushHeadPopTailFIFO(t *testing.T) {
 func TestPushHeadExistingHashIsIdempotent(t *testing.T) {
 	q := newTestQueues(t)
 
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
-	require.NoError(t, q.PushHead(QueueSmall, "b"))
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
+	require.False(t, pushHead(t, q, QueueSmall, "a"))
+	require.False(t, pushHead(t, q, QueueSmall, "b"))
+	require.True(t, pushHead(t, q, QueueSmall, "a"))
 
 	n, err := q.Len(QueueSmall)
 	require.NoError(t, err)
@@ -84,9 +91,9 @@ func TestPopTailEmptyQueue(t *testing.T) {
 func TestRemove(t *testing.T) {
 	q := newTestQueues(t)
 
-	require.NoError(t, q.PushHead(QueueSmall, "x"))
-	require.NoError(t, q.PushHead(QueueSmall, "y"))
-	require.NoError(t, q.PushHead(QueueSmall, "z"))
+	pushHead(t, q, QueueSmall, "x")
+	pushHead(t, q, QueueSmall, "y")
+	pushHead(t, q, QueueSmall, "z")
 
 	removed, err := q.Remove(QueueSmall, "y")
 	require.NoError(t, err)
@@ -116,8 +123,8 @@ func TestLen(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 0, n)
 
-	require.NoError(t, q.PushHead(QueueSmall, "a"))
-	require.NoError(t, q.PushHead(QueueSmall, "b"))
+	pushHead(t, q, QueueSmall, "a")
+	pushHead(t, q, QueueSmall, "b")
 
 	n, err = q.Len(QueueSmall)
 	require.NoError(t, err)
@@ -218,7 +225,7 @@ func TestForEach(t *testing.T) {
 	q := newTestQueues(t)
 
 	for _, h := range []string{"x", "y", "z"} {
-		require.NoError(t, q.PushHead(QueueSmall, h))
+		pushHead(t, q, QueueSmall, h)
 	}
 
 	var got []string

@@ -217,7 +217,7 @@ func TestEvictMainSecondChance(t *testing.T) {
 	size := int64(len(content))
 
 	// Directly admit to main to bypass small queue logic.
-	require.NoError(t, mgr.queues.PushHead(QueueMain, hash))
+	pushHead(t, mgr.queues, QueueMain, hash)
 	mgr.mu.Lock()
 	mgr.mainBytes = size
 	mgr.mainLen = 1
@@ -250,7 +250,7 @@ func TestEvictMainCold(t *testing.T) {
 	hash := putBlob(t, ctx, mdb, b, content)
 	size := int64(len(content))
 
-	require.NoError(t, mgr.queues.PushHead(QueueMain, hash))
+	pushHead(t, mgr.queues, QueueMain, hash)
 	mgr.mu.Lock()
 	mgr.mainBytes = size
 	mgr.mainLen = 1
@@ -326,6 +326,53 @@ func TestPinnedOverlimitDoesNotImmediatelyReschedule(t *testing.T) {
 	}
 }
 
+func TestPinnedTailDoesNotBlockEvictableSmallCandidate(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 15})
+
+	pinnedHash := putBlob(t, ctx, mdb, b, "pinned-blob")
+	pinnedSize := int64(len("pinned-blob"))
+	evictableHash := putBlob(t, ctx, mdb, b, "evictable-blob")
+	evictableSize := int64(len("evictable-blob"))
+
+	entry, err := mdb.GetBlob(ctx, pinnedHash)
+	require.NoError(t, err)
+	entry.RefCount = 1
+	require.NoError(t, mdb.PutBlob(ctx, entry))
+
+	mgr.Admit(ctx, pinnedHash, pinnedSize)
+	mgr.Admit(ctx, evictableHash, evictableSize)
+
+	mgr.maybeEvict(ctx)
+
+	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, pinnedHash)))
+	require.NoError(t, err)
+	require.True(t, exists, "pinned blob must remain")
+
+	exists, err = b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, evictableHash)))
+	require.NoError(t, err)
+	require.False(t, exists, "evictable blob should be considered after the pinned tail is requeued")
+}
+
+func TestDuplicateAdmitDoesNotDoubleCountQueueState(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{})
+	hash := putBlob(t, ctx, mdb, b, "hello world")
+	size := int64(len("hello world"))
+
+	mgr.Admit(ctx, hash, size)
+	mgr.Admit(ctx, hash, size)
+
+	n, err := mgr.queues.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	require.Equal(t, size, mgr.smallBytes)
+	require.Equal(t, 1, mgr.smallLen)
+}
+
 func TestManagerRemove(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{})
@@ -382,7 +429,7 @@ func TestOrphanedQueueEntryCleanup(t *testing.T) {
 
 		// A hash that exists in the queue but has no MetaDB entry.
 		orphanHash := strings.Repeat("a", 64)
-		require.NoError(t, mgr.queues.PushHead(QueueSmall, orphanHash))
+		pushHead(t, mgr.queues, QueueSmall, orphanHash)
 		mgr.mu.Lock()
 		mgr.smallBytes = 10 // force over-limit so maybeEvict acts
 		mgr.smallLen = 1
@@ -398,7 +445,7 @@ func TestOrphanedQueueEntryCleanup(t *testing.T) {
 		mgr, _, _ := testManager(t, Config{MaxSize: 5, SmallQueuePercent: 10})
 
 		orphanHash := strings.Repeat("b", 64)
-		require.NoError(t, mgr.queues.PushHead(QueueMain, orphanHash))
+		pushHead(t, mgr.queues, QueueMain, orphanHash)
 		mgr.mu.Lock()
 		mgr.mainBytes = 10
 		mgr.mainLen = 1
