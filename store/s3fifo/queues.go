@@ -33,7 +33,7 @@ var (
 // Queues is the interface for S3-FIFO queue and ghost set operations.
 // Implementations must be safe to call concurrently.
 type Queues interface {
-	PushHead(queue, hash string) error
+	PushHead(queue, hash string) (bool, error)
 	PopTail(queue string) (string, error)
 	Remove(queue, hash string) (bool, error)
 	Len(queue string) (int, error)
@@ -77,10 +77,14 @@ func (q *BoltQueues) createBuckets() error {
 
 // PushHead inserts hash at the head (newest position) of the named queue.
 // Subsequent PopTail calls return older entries first.
-func (q *BoltQueues) PushHead(queue, hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
-		return txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
+	var replaced bool
+	err := q.db.Update(func(tx *bbolt.Tx) error {
+		var err error
+		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+		return err
 	})
+	return replaced, err
 }
 
 // PopTail removes and returns the oldest hash from the named queue.
@@ -169,7 +173,8 @@ func (q *BoltQueues) AdmitGhostHit(hash string) error {
 			return err
 		}
 
-		return txPushHead(tx, bucketMain, bucketMainByHash, hash)
+		_, err := txPushHead(tx, bucketMain, bucketMainByHash, hash)
+		return err
 	})
 }
 
@@ -191,6 +196,14 @@ func (q *BoltQueues) GhostAdd(hash string) error {
 	return q.db.Update(func(tx *bbolt.Tx) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
+
+		if oldSeq := ghostBucket.Get([]byte(hash)); oldSeq != nil {
+			oldSeqKey := make([]byte, len(oldSeq))
+			copy(oldSeqKey, oldSeq)
+			if err := seqBucket.Delete(oldSeqKey); err != nil {
+				return err
+			}
+		}
 
 		seq, err := seqBucket.NextSequence()
 		if err != nil {
@@ -275,20 +288,30 @@ func (q *BoltQueues) GhostLen() (int, error) {
 
 // txPushHead inserts hash into the queue using the next monotonic sequence number.
 // Must be called inside a bbolt Update transaction.
-func txPushHead(tx *bbolt.Tx, fwdName, revName []byte, hash string) error {
+func txPushHead(tx *bbolt.Tx, fwdName, revName []byte, hash string) (bool, error) {
 	fwd := tx.Bucket(fwdName)
 	rev := tx.Bucket(revName)
 
+	replaced := false
+	if oldSeq := rev.Get([]byte(hash)); oldSeq != nil {
+		replaced = true
+		oldSeqKey := make([]byte, len(oldSeq))
+		copy(oldSeqKey, oldSeq)
+		if err := fwd.Delete(oldSeqKey); err != nil {
+			return false, err
+		}
+	}
+
 	seq, err := fwd.NextSequence()
 	if err != nil {
-		return err
+		return false, err
 	}
 	seqKey := encodeSeq(seq)
 
 	if err := fwd.Put(seqKey, []byte(hash)); err != nil {
-		return err
+		return false, err
 	}
-	return rev.Put([]byte(hash), seqKey)
+	return replaced, rev.Put([]byte(hash), seqKey)
 }
 
 // txPopTail removes and returns the entry with the lowest sequence number
