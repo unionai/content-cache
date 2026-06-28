@@ -30,7 +30,7 @@ func setupMetaDB(t *testing.T, tmpDir string) (*metadb.BoltDB, *Index, func()) {
 	return db, idx, func() { _ = db.Close() }
 }
 
-func newTestHandler(t *testing.T, upstreamServer *httptest.Server) (*Handler, func()) {
+func newTestHandler(t *testing.T, upstreamServer *httptest.Server, extraOpts ...HandlerOption) (*Handler, func()) {
 	t.Helper()
 	// Use a manual temp dir instead of t.TempDir() to avoid race with async goroutines
 	tmpDir, err := os.MkdirTemp("", "npm-test-*")
@@ -47,7 +47,7 @@ func newTestHandler(t *testing.T, upstreamServer *httptest.Server) (*Handler, fu
 	}
 	upstream := NewUpstream(opts...)
 
-	h := NewHandler(idx, cafs, WithUpstream(upstream))
+	h := NewHandler(idx, cafs, append([]HandlerOption{WithUpstream(upstream)}, extraOpts...)...)
 	return h, func() {
 		// Wait for background goroutines to complete before cleanup
 		h.Close()
@@ -344,6 +344,40 @@ func TestHandlerTarballURLRewrite(t *testing.T) {
 	body := w.Body.String()
 	// URL should be rewritten to point to our proxy
 	require.Contains(t, body, "http://localhost:8080/npm/test-pkg/-/test-pkg-1.0.0.tgz")
+	require.NotContains(t, body, "registry.npmjs.org")
+}
+
+func TestHandlerTarballURLRewritePublicBaseURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"name": "test-pkg",
+			"versions": {
+				"1.0.0": {
+					"name": "test-pkg",
+					"version": "1.0.0",
+					"dist": {
+						"tarball": "https://registry.npmjs.org/test-pkg/-/test-pkg-1.0.0.tgz"
+					}
+				}
+			}
+		}`))
+	}))
+	defer upstream.Close()
+
+	h, cleanup := newTestHandler(t, upstream, WithPublicBaseURL("https://cache.example.com/"))
+	defer cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/test-pkg", nil)
+	req.Host = "localhost:8080"
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	require.Contains(t, body, "https://cache.example.com/npm/test-pkg/-/test-pkg-1.0.0.tgz")
+	require.NotContains(t, body, "localhost:8080")
 	require.NotContains(t, body, "registry.npmjs.org")
 }
 
