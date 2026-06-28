@@ -62,24 +62,27 @@ type Metrics struct {
 	reaperDuration     metric.Float64Histogram
 
 	// S3-FIFO eviction metrics
-	s3fifoAdmissionsTotal          metric.Int64Counter
-	s3fifoAdmissionBytesTotal      metric.Int64Counter
-	s3fifoGhostHitsTotal           metric.Int64Counter
-	s3fifoPromotionsTotal          metric.Int64Counter
-	s3fifoOneHitEvictionsTotal     metric.Int64Counter
-	s3fifoOneHitEvictionBytesTotal metric.Int64Counter
-	s3fifoSecondChanceTotal        metric.Int64Counter
-	s3fifoEvictionsTotal           metric.Int64Counter
-	s3fifoEvictionBytesTotal       metric.Int64Counter
-	s3fifoPinnedSkipsTotal         metric.Int64Counter
-	s3fifoEvictionRunDuration      metric.Float64Histogram
-	s3fifoEvictionRunsTotal        metric.Int64Counter
-	s3fifoQueueBytes               metric.Int64Gauge
-	s3fifoQueueEntries             metric.Int64Gauge
-	s3fifoGhostEntries             metric.Int64Gauge
-	s3fifoTargetBytes              metric.Int64Gauge
-	s3fifoCacheMaxSizeBytes        metric.Int64Gauge
-	s3fifoOverlimitBytes           metric.Int64Gauge
+	s3fifoAdmissionsTotal           metric.Int64Counter
+	s3fifoAdmissionBytesTotal       metric.Int64Counter
+	s3fifoGhostHitsTotal            metric.Int64Counter
+	s3fifoPromotionsTotal           metric.Int64Counter
+	s3fifoOneHitEvictionsTotal      metric.Int64Counter
+	s3fifoOneHitEvictionBytesTotal  metric.Int64Counter
+	s3fifoSecondChanceTotal         metric.Int64Counter
+	s3fifoEvictionsTotal            metric.Int64Counter
+	s3fifoEvictionBytesTotal        metric.Int64Counter
+	s3fifoPinnedSkipsTotal          metric.Int64Counter
+	s3fifoEvictionErrorsTotal       metric.Int64Counter
+	s3fifoEvictionBlockedTotal      metric.Int64Counter
+	s3fifoOrphanedQueueEntriesTotal metric.Int64Counter
+	s3fifoEvictionRunDuration       metric.Float64Histogram
+	s3fifoEvictionRunsTotal         metric.Int64Counter
+	s3fifoQueueBytes                metric.Int64Gauge
+	s3fifoQueueEntries              metric.Int64Gauge
+	s3fifoGhostEntries              metric.Int64Gauge
+	s3fifoTargetBytes               metric.Int64Gauge
+	s3fifoCacheMaxSizeBytes         metric.Int64Gauge
+	s3fifoOverlimitBytes            metric.Int64Gauge
 
 	meterProvider *sdkmetric.MeterProvider
 	promHandler   http.Handler
@@ -388,6 +391,33 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		return err
 	}
 
+	s3fifoEvictionErrorsTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_eviction_errors_total",
+		metric.WithDescription("Total S3-FIFO eviction errors by reason and queue"),
+		metric.WithUnit("{error}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	s3fifoEvictionBlockedTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_eviction_blocked_total",
+		metric.WithDescription("Total S3-FIFO eviction runs that could not make progress"),
+		metric.WithUnit("{run}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	s3fifoOrphanedQueueEntriesTotal, err := meter.Int64Counter(
+		"content_cache_s3fifo_orphaned_queue_entries_total",
+		metric.WithDescription("Total stale S3-FIFO queue entries without matching blob metadata"),
+		metric.WithUnit("{entry}"),
+	)
+	if err != nil {
+		return err
+	}
+
 	s3fifoEvictionRunDuration, err := meter.Float64Histogram(
 		"content_cache_s3fifo_eviction_run_duration_seconds",
 		metric.WithDescription("Duration of S3-FIFO eviction runs"),
@@ -462,42 +492,45 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	}
 
 	globalMetrics = &Metrics{
-		authRequestsTotal:              authRequestsTotal,
-		reaperDeletedTotal:             reaperDeletedTotal,
-		reaperDuration:                 reaperDuration,
-		requestsTotal:                  requestsTotal,
-		responseBytesTotal:             responseBytesTotal,
-		requestDuration:                requestDuration,
-		requestsByEndpointTotal:        requestsByEndpointTotal,
-		blobWriteSize:                  blobWriteSize,
-		upstreamFetchDuration:          upstreamFetchDuration,
-		upstreamFetchTotal:             upstreamFetchTotal,
-		upstreamFetchBytesTotal:        upstreamFetchBytesTotal,
-		blobTouchesTotal:               blobTouchesTotal,
-		blobTouchMissesTotal:           blobTouchMissesTotal,
-		backendRequestDuration:         backendRequestDuration,
-		backendRequestsTotal:           backendRequestsTotal,
-		backendBytesTotal:              backendBytesTotal,
-		s3fifoAdmissionsTotal:          s3fifoAdmissionsTotal,
-		s3fifoAdmissionBytesTotal:      s3fifoAdmissionBytesTotal,
-		s3fifoGhostHitsTotal:           s3fifoGhostHitsTotal,
-		s3fifoPromotionsTotal:          s3fifoPromotionsTotal,
-		s3fifoOneHitEvictionsTotal:     s3fifoOneHitEvictionsTotal,
-		s3fifoOneHitEvictionBytesTotal: s3fifoOneHitEvictionBytesTotal,
-		s3fifoSecondChanceTotal:        s3fifoSecondChanceTotal,
-		s3fifoEvictionsTotal:           s3fifoEvictionsTotal,
-		s3fifoEvictionBytesTotal:       s3fifoEvictionBytesTotal,
-		s3fifoPinnedSkipsTotal:         s3fifoPinnedSkipsTotal,
-		s3fifoEvictionRunDuration:      s3fifoEvictionRunDuration,
-		s3fifoEvictionRunsTotal:        s3fifoEvictionRunsTotal,
-		s3fifoQueueBytes:               s3fifoQueueBytes,
-		s3fifoQueueEntries:             s3fifoQueueEntries,
-		s3fifoGhostEntries:             s3fifoGhostEntries,
-		s3fifoTargetBytes:              s3fifoTargetBytes,
-		s3fifoCacheMaxSizeBytes:        s3fifoCacheMaxSizeBytes,
-		s3fifoOverlimitBytes:           s3fifoOverlimitBytes,
-		meterProvider:                  mp,
-		promHandler:                    promHandler,
+		authRequestsTotal:               authRequestsTotal,
+		reaperDeletedTotal:              reaperDeletedTotal,
+		reaperDuration:                  reaperDuration,
+		requestsTotal:                   requestsTotal,
+		responseBytesTotal:              responseBytesTotal,
+		requestDuration:                 requestDuration,
+		requestsByEndpointTotal:         requestsByEndpointTotal,
+		blobWriteSize:                   blobWriteSize,
+		upstreamFetchDuration:           upstreamFetchDuration,
+		upstreamFetchTotal:              upstreamFetchTotal,
+		upstreamFetchBytesTotal:         upstreamFetchBytesTotal,
+		blobTouchesTotal:                blobTouchesTotal,
+		blobTouchMissesTotal:            blobTouchMissesTotal,
+		backendRequestDuration:          backendRequestDuration,
+		backendRequestsTotal:            backendRequestsTotal,
+		backendBytesTotal:               backendBytesTotal,
+		s3fifoAdmissionsTotal:           s3fifoAdmissionsTotal,
+		s3fifoAdmissionBytesTotal:       s3fifoAdmissionBytesTotal,
+		s3fifoGhostHitsTotal:            s3fifoGhostHitsTotal,
+		s3fifoPromotionsTotal:           s3fifoPromotionsTotal,
+		s3fifoOneHitEvictionsTotal:      s3fifoOneHitEvictionsTotal,
+		s3fifoOneHitEvictionBytesTotal:  s3fifoOneHitEvictionBytesTotal,
+		s3fifoSecondChanceTotal:         s3fifoSecondChanceTotal,
+		s3fifoEvictionsTotal:            s3fifoEvictionsTotal,
+		s3fifoEvictionBytesTotal:        s3fifoEvictionBytesTotal,
+		s3fifoPinnedSkipsTotal:          s3fifoPinnedSkipsTotal,
+		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
+		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
+		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
+		s3fifoEvictionRunDuration:       s3fifoEvictionRunDuration,
+		s3fifoEvictionRunsTotal:         s3fifoEvictionRunsTotal,
+		s3fifoQueueBytes:                s3fifoQueueBytes,
+		s3fifoQueueEntries:              s3fifoQueueEntries,
+		s3fifoGhostEntries:              s3fifoGhostEntries,
+		s3fifoTargetBytes:               s3fifoTargetBytes,
+		s3fifoCacheMaxSizeBytes:         s3fifoCacheMaxSizeBytes,
+		s3fifoOverlimitBytes:            s3fifoOverlimitBytes,
+		meterProvider:                   mp,
+		promHandler:                     promHandler,
 	}
 
 	return nil
@@ -836,6 +869,36 @@ func RecordS3FIFOPinnedSkip(ctx context.Context, queue string) {
 	}
 	attrs := []attribute.KeyValue{attribute.String("queue", queue)}
 	globalMetrics.s3fifoPinnedSkipsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordS3FIFOEvictionError records an operational error during S3-FIFO eviction.
+func RecordS3FIFOEvictionError(ctx context.Context, queue, reason string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{
+		attribute.String("queue", queue),
+		attribute.String("reason", reason),
+	}
+	globalMetrics.s3fifoEvictionErrorsTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordS3FIFOEvictionBlocked records an eviction run that could not make progress.
+func RecordS3FIFOEvictionBlocked(ctx context.Context, reason string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{attribute.String("reason", reason)}
+	globalMetrics.s3fifoEvictionBlockedTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// RecordS3FIFOOrphanedQueueEntry records a stale queue entry with no blob metadata.
+func RecordS3FIFOOrphanedQueueEntry(ctx context.Context, queue string) {
+	if globalMetrics == nil {
+		return
+	}
+	attrs := []attribute.KeyValue{attribute.String("queue", queue)}
+	globalMetrics.s3fifoOrphanedQueueEntriesTotal.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // RecordS3FIFOEvictionRun records the duration of one MaybeEvict call.

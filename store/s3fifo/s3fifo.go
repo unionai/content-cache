@@ -131,12 +131,14 @@ func (m *Manager) Admit(ctx context.Context, hash string, size int64) {
 	inGhost, err := m.queues.GhostContains(hash)
 	if err != nil {
 		m.logger.Warn("s3fifo: ghost check failed", "hash", hash, "error", err)
+		telemetry.RecordS3FIFOEvictionError(ctx, "ghost", "queue_read")
 		// Fall through and admit to small.
 	}
 
 	if inGhost {
 		if err := m.queues.AdmitGhostHit(hash); err != nil {
 			m.logger.Warn("s3fifo: admit ghost hit failed", "hash", hash, "error", err)
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "queue_write")
 			return
 		}
 		m.mainBytes += size
@@ -147,6 +149,7 @@ func (m *Manager) Admit(ctx context.Context, hash string, size int64) {
 	} else {
 		if err := m.queues.PushHead(QueueSmall, hash); err != nil {
 			m.logger.Warn("s3fifo: push to small queue failed", "hash", hash, "error", err)
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueSmall, "queue_write")
 			return
 		}
 		m.smallBytes += size
@@ -185,6 +188,7 @@ func (m *Manager) Remove(ctx context.Context, hash string, size int64) {
 
 	if removed, err := m.queues.Remove(QueueSmall, hash); err != nil {
 		m.logger.Warn("s3fifo: remove from small queue failed", "hash", hash, "error", err)
+		telemetry.RecordS3FIFOEvictionError(ctx, QueueSmall, "queue_remove")
 	} else if removed {
 		m.smallBytes -= size
 		if m.smallBytes < 0 {
@@ -198,6 +202,7 @@ func (m *Manager) Remove(ctx context.Context, hash string, size int64) {
 
 	if removed, err := m.queues.Remove(QueueMain, hash); err != nil {
 		m.logger.Warn("s3fifo: remove from main queue failed", "hash", hash, "error", err)
+		telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "queue_remove")
 	} else if removed {
 		m.mainBytes -= size
 		if m.mainBytes < 0 {
@@ -213,6 +218,7 @@ func (m *Manager) Remove(ctx context.Context, hash string, size int64) {
 	if inGhost, _ := m.queues.GhostContains(hash); inGhost {
 		if err := m.queues.GhostRemove(hash); err != nil {
 			m.logger.Warn("s3fifo: ghost remove failed", "hash", hash, "error", err)
+			telemetry.RecordS3FIFOEvictionError(ctx, "ghost", "queue_remove")
 		} else {
 			m.ghostLen--
 			if m.ghostLen < 0 {
@@ -286,6 +292,7 @@ func (m *Manager) maybeEvict(ctx context.Context) {
 			m.logger.Warn("s3fifo: all eviction candidates pinned, allowing temporary overrun",
 				"over_by", m.smallBytes+m.mainBytes-m.config.MaxSize,
 			)
+			telemetry.RecordS3FIFOEvictionBlocked(ctx, "all_candidates_pinned")
 		}
 
 		// If still over limit, schedule another eviction pass only after real
@@ -329,17 +336,20 @@ func (m *Manager) evictFromSmall(ctx context.Context) (skipped bool, err error) 
 			// Orphaned queue entry (blob deleted externally without Remove hook).
 			// Drop it silently; byte counter will be corrected on restart.
 			m.logger.Debug("s3fifo: orphaned small queue entry", "hash", hash)
+			telemetry.RecordS3FIFOOrphanedQueueEntry(ctx, QueueSmall)
 			return false, nil
 		}
 		// Re-queue on transient errors to avoid losing the entry.
 		_ = m.queues.PushHead(QueueSmall, hash)
 		m.smallLen++
+		telemetry.RecordS3FIFOEvictionError(ctx, QueueSmall, "metadb_get")
 		return false, fmt.Errorf("get blob %s: %w", hash, err)
 	}
 
 	if entry.RefCount > 0 {
 		// Pinned: must re-queue.
 		if err := m.queues.PushHead(QueueSmall, hash); err != nil {
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueSmall, "queue_write")
 			return false, err
 		}
 		m.smallLen++
@@ -357,6 +367,7 @@ func (m *Manager) evictFromSmall(ctx context.Context) (skipped bool, err error) 
 		// before it can be evicted. No MetaDB write is needed here.
 		if err := m.queues.PushHead(QueueMain, hash); err != nil {
 			m.smallBytes += entry.Size
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "queue_write")
 			return false, err
 		}
 		m.mainBytes += entry.Size
@@ -364,7 +375,7 @@ func (m *Manager) evictFromSmall(ctx context.Context) (skipped bool, err error) 
 		telemetry.RecordS3FIFOPromotion(ctx)
 	} else {
 		// One-hit wonder: evict and record in ghost set.
-		if err := m.deleteFromBackend(ctx, hash); err != nil {
+		if err := m.deleteFromBackend(ctx, QueueSmall, hash); err != nil {
 			m.smallBytes += entry.Size
 			_ = m.queues.PushHead(QueueSmall, hash)
 			m.smallLen++
@@ -372,11 +383,14 @@ func (m *Manager) evictFromSmall(ctx context.Context) (skipped bool, err error) 
 		}
 		if err := m.queues.GhostAdd(hash); err != nil {
 			m.logger.Warn("s3fifo: ghost add failed", "hash", hash, "error", err)
+			telemetry.RecordS3FIFOEvictionError(ctx, "ghost", "queue_write")
 		} else {
 			m.ghostLen++
 		}
 		ghostMax := m.ghostMaxEntries()
-		_ = m.queues.GhostTrimToMaxSize(ghostMax)
+		if err := m.queues.GhostTrimToMaxSize(ghostMax); err != nil {
+			telemetry.RecordS3FIFOEvictionError(ctx, "ghost", "queue_trim")
+		}
 		if m.ghostLen > ghostMax {
 			m.ghostLen = ghostMax
 		}
@@ -404,15 +418,18 @@ func (m *Manager) evictFromMain(ctx context.Context) (skipped bool, err error) {
 	if err != nil {
 		if errors.Is(err, metadb.ErrNotFound) {
 			m.logger.Debug("s3fifo: orphaned main queue entry", "hash", hash)
+			telemetry.RecordS3FIFOOrphanedQueueEntry(ctx, QueueMain)
 			return false, nil
 		}
 		_ = m.queues.PushHead(QueueMain, hash)
 		m.mainLen++
+		telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "metadb_get")
 		return false, fmt.Errorf("get blob %s: %w", hash, err)
 	}
 
 	if entry.RefCount > 0 {
 		if err := m.queues.PushHead(QueueMain, hash); err != nil {
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "queue_write")
 			return false, err
 		}
 		m.mainLen++
@@ -426,9 +443,11 @@ func (m *Manager) evictFromMain(ctx context.Context) (skipped bool, err error) {
 		if err := m.metaDB.PutBlob(ctx, entry); err != nil {
 			_ = m.queues.PushHead(QueueMain, hash)
 			m.mainLen++
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "metadb_put")
 			return false, fmt.Errorf("decrement access count for %s: %w", hash, err)
 		}
 		if err := m.queues.PushHead(QueueMain, hash); err != nil {
+			telemetry.RecordS3FIFOEvictionError(ctx, QueueMain, "queue_write")
 			return false, err
 		}
 		m.mainLen++
@@ -436,7 +455,7 @@ func (m *Manager) evictFromMain(ctx context.Context) (skipped bool, err error) {
 	} else {
 		// Cold: evict.
 		m.mainBytes -= entry.Size
-		if err := m.deleteFromBackend(ctx, hash); err != nil {
+		if err := m.deleteFromBackend(ctx, QueueMain, hash); err != nil {
 			m.mainBytes += entry.Size
 			_ = m.queues.PushHead(QueueMain, hash)
 			return false, err
@@ -447,17 +466,20 @@ func (m *Manager) evictFromMain(ctx context.Context) (skipped bool, err error) {
 }
 
 // deleteFromBackend removes a blob from the filesystem backend and from MetaDB.
-func (m *Manager) deleteFromBackend(ctx context.Context, hash string) error {
+func (m *Manager) deleteFromBackend(ctx context.Context, queue, hash string) error {
 	ref, err := contentcache.ParseBlobRef(hash)
 	if err != nil {
+		telemetry.RecordS3FIFOEvictionError(ctx, queue, "parse_hash")
 		return fmt.Errorf("parse hash %q: %w", hash, err)
 	}
 	key := contentcache.BlobStorageKey(ref.Hash)
 
 	if err := m.backend.Delete(ctx, key); err != nil && !errors.Is(err, backend.ErrNotFound) {
+		telemetry.RecordS3FIFOEvictionError(ctx, queue, "backend_delete")
 		return fmt.Errorf("delete backend key %s: %w", key, err)
 	}
 	if err := m.metaDB.DeleteBlob(ctx, hash); err != nil && !errors.Is(err, metadb.ErrNotFound) {
+		telemetry.RecordS3FIFOEvictionError(ctx, queue, "metadb_delete")
 		return fmt.Errorf("delete metadb entry %s: %w", hash, err)
 	}
 	return nil

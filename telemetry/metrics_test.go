@@ -39,13 +39,25 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	authRequestsTotal, err := meter.Int64Counter("content_cache_auth_requests_total")
 	require.NoError(t, err)
 
+	s3fifoEvictionErrorsTotal, err := meter.Int64Counter("content_cache_s3fifo_eviction_errors_total")
+	require.NoError(t, err)
+
+	s3fifoEvictionBlockedTotal, err := meter.Int64Counter("content_cache_s3fifo_eviction_blocked_total")
+	require.NoError(t, err)
+
+	s3fifoOrphanedQueueEntriesTotal, err := meter.Int64Counter("content_cache_s3fifo_orphaned_queue_entries_total")
+	require.NoError(t, err)
+
 	globalMetrics = &Metrics{
-		requestsTotal:           requestsTotal,
-		responseBytesTotal:      responseBytesTotal,
-		requestDuration:         requestDuration,
-		requestsByEndpointTotal: requestsByEndpointTotal,
-		authRequestsTotal:       authRequestsTotal,
-		meterProvider:           mp,
+		requestsTotal:                   requestsTotal,
+		responseBytesTotal:              responseBytesTotal,
+		requestDuration:                 requestDuration,
+		requestsByEndpointTotal:         requestsByEndpointTotal,
+		authRequestsTotal:               authRequestsTotal,
+		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
+		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
+		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
+		meterProvider:                   mp,
 	}
 
 	t.Cleanup(func() {
@@ -237,6 +249,33 @@ func TestRecordHTTP_NoAuthMetricWithoutOutcome(t *testing.T) {
 	rm := collectMetrics(t, reader)
 	dps := findCounter(rm, "content_cache_auth_requests_total")
 	require.Empty(t, dps)
+}
+
+func TestRecordS3FIFOOperationalMetrics(t *testing.T) {
+	reader := setupTestMetrics(t)
+	ctx := context.Background()
+
+	RecordS3FIFOEvictionError(ctx, "main", "backend_delete")
+	RecordS3FIFOEvictionBlocked(ctx, "all_candidates_pinned")
+	RecordS3FIFOOrphanedQueueEntry(ctx, "small")
+
+	rm := collectMetrics(t, reader)
+
+	errorDps := findCounter(rm, "content_cache_s3fifo_eviction_errors_total")
+	require.Len(t, errorDps, 1)
+	require.EqualValues(t, 1, errorDps[0].Value)
+	require.True(t, hasAttr(errorDps[0].Attributes, "queue", "main"))
+	require.True(t, hasAttr(errorDps[0].Attributes, "reason", "backend_delete"))
+
+	blockedDps := findCounter(rm, "content_cache_s3fifo_eviction_blocked_total")
+	require.Len(t, blockedDps, 1)
+	require.EqualValues(t, 1, blockedDps[0].Value)
+	require.True(t, hasAttr(blockedDps[0].Attributes, "reason", "all_candidates_pinned"))
+
+	orphanDps := findCounter(rm, "content_cache_s3fifo_orphaned_queue_entries_total")
+	require.Len(t, orphanDps, 1)
+	require.EqualValues(t, 1, orphanDps[0].Value)
+	require.True(t, hasAttr(orphanDps[0].Attributes, "queue", "small"))
 }
 
 func TestStatusClass(t *testing.T) {
