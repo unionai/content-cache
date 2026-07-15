@@ -514,32 +514,13 @@ func (b *BoltDB) GetExpiredMeta(_ context.Context, before time.Time, limit int) 
 	return entries, err
 }
 
-// GetUnreferencedBlobs returns blobs without refcounted or size-evictable
-// envelope references whose last access time is before the given cutoff. When
-// before is zero, no cutoff is applied.
+// GetUnreferencedBlobs returns blobs with RefCount == 0 whose last access time
+// is before the given cutoff. When before is zero, no cutoff is applied and all
+// unreferenced blobs are returned regardless of age.
 func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit int) ([]string, error) {
 	var hashes []string
 
 	err := b.db.View(func(tx *bbolt.Tx) error {
-		referenced := make(map[string]struct{})
-		if envelopes := tx.Bucket(bucketEnvelopes); envelopes != nil {
-			if err := envelopes.ForEach(func(_, value []byte) error {
-				var env MetadataEnvelope
-				if err := proto.Unmarshal(value, &env); err != nil {
-					return nil
-				}
-				if !bytes.Equal(env.Attributes[sizeEvictableRefsAttribute], []byte{1}) {
-					return nil
-				}
-				for _, hash := range env.BlobRefs {
-					referenced[hash] = struct{}{}
-				}
-				return nil
-			}); err != nil {
-				return err
-			}
-		}
-
 		bucket := tx.Bucket(bucketBlobsByHash)
 		if bucket == nil {
 			return nil
@@ -558,10 +539,6 @@ func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit
 			if entry.RefCount != 0 {
 				return nil
 			}
-			if _, ok := referenced[string(k)]; ok {
-				return nil
-			}
-
 			// Retention floor: skip blobs still within the retention window.
 			if !before.IsZero() {
 				lastSeen := entry.CachedAt
@@ -922,12 +899,11 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 
 		compoundKey := makeEnvelopeKey(protocol, kind, key)
 
-		// The refs bucket contains only references reflected in BlobEntry.RefCount.
+		// Get old refs for this key
 		oldRefs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
 
 		// Compute diff
-		newRefs := protectedRefs(env)
-		added, removed := DiffRefs(oldRefs, newRefs)
+		added, removed := DiffRefs(oldRefs, env.BlobRefs)
 
 		// Update blob refcounts
 		for _, hash := range added {
@@ -941,7 +917,7 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 			}
 		}
 		// Store the new refs
-		refsData, err := json.Marshal(newRefs)
+		refsData, err := json.Marshal(env.BlobRefs)
 		if err != nil {
 			return fmt.Errorf("marshaling refs: %w", err)
 		}
@@ -1115,8 +1091,7 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 		newEnv.BlobRefs = CanonicalizeRefs(newEnv.BlobRefs)
 
 		// Compute ref diff
-		newRefs := protectedRefs(newEnv)
-		added, removed := DiffRefs(oldRefs, newRefs)
+		added, removed := DiffRefs(oldRefs, newEnv.BlobRefs)
 
 		// Update blob refcounts
 		for _, hash := range added {
@@ -1130,7 +1105,7 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 			}
 		}
 		// Store new refs
-		refsData, err := json.Marshal(newRefs)
+		refsData, err := json.Marshal(newEnv.BlobRefs)
 		if err != nil {
 			return fmt.Errorf("marshaling refs: %w", err)
 		}
@@ -1152,24 +1127,16 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 	})
 }
 
-// GetEnvelopeBlobRefs returns the semantic blob refs stored in an envelope.
+// GetEnvelopeBlobRefs returns the blob refs for an envelope key.
 func (b *BoltDB) GetEnvelopeBlobRefs(_ context.Context, protocol, kind, key string) ([]string, error) {
 	var refs []string
 	err := b.db.View(func(tx *bbolt.Tx) error {
-		envBucket := tx.Bucket(bucketEnvelopes)
-		if envBucket == nil {
+		refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
+		if refsBucket == nil {
 			return nil
 		}
 		compoundKey := makeEnvelopeKey(protocol, kind, key)
-		data := envBucket.Get(compoundKey)
-		if data == nil {
-			return nil
-		}
-		var env MetadataEnvelope
-		if err := proto.Unmarshal(data, &env); err != nil {
-			return fmt.Errorf("unmarshaling envelope: %w", err)
-		}
-		refs = append(refs, env.BlobRefs...)
+		refs = b.getEnvelopeBlobRefs(refsBucket, compoundKey)
 		return nil
 	})
 	return refs, err

@@ -149,36 +149,6 @@ func TestEnvelope_BlobRefTracking(t *testing.T) {
 	require.Equal(t, 0, blob2.RefCount)
 }
 
-func TestEnvelope_SizeEvictableRefRemainsReachableToFullGC(t *testing.T) {
-	db := setupEnvelopeTestDB(t)
-	ctx := context.Background()
-
-	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
-
-	env := &MetadataEnvelope{
-		EnvelopeVersion: 1,
-		ContentType:     ContentType_CONTENT_TYPE_JSON,
-		Payload:         []byte(`{}`),
-		BlobRefs:        []string{hash},
-	}
-	markSizeEvictableRefs(env)
-	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "action", env))
-
-	blob, err := db.GetBlob(ctx, hash)
-	require.NoError(t, err)
-	require.Zero(t, blob.RefCount)
-
-	unreferenced, err := db.GetUnreferencedBlobs(ctx, time.Time{}, 10)
-	require.NoError(t, err)
-	require.Empty(t, unreferenced)
-
-	require.NoError(t, db.DeleteEnvelope(ctx, "buildcache", "entry", "action"))
-	unreferenced, err = db.GetUnreferencedBlobs(ctx, time.Time{}, 10)
-	require.NoError(t, err)
-	require.Equal(t, []string{hash}, unreferenced)
-}
-
 func TestEnvelope_ExpiryIndex(t *testing.T) {
 	now := time.Now()
 	db := NewBoltDB(WithNoSync(true), WithNow(func() time.Time { return now }))

@@ -311,10 +311,6 @@ func TestIndexGetPut(t *testing.T) {
 	require.Equal(t, entry.OutputID, got.OutputID)
 	require.Equal(t, entry.BlobHash, got.BlobHash)
 	require.Equal(t, entry.Size, got.Size)
-
-	refs, err := entryIndex.GetBlobRefs(ctx, "aa00")
-	require.NoError(t, err)
-	require.Equal(t, []string{blobHash}, refs)
 }
 
 func TestIsValidHex(t *testing.T) {

@@ -31,11 +31,9 @@ func (idx *Index) Get(ctx context.Context, actionID string) (*ActionEntry, error
 
 // Put stores an entry for the given actionID.
 //
-// Build cache entries keep their blobs reachable by full GC. Their references
-// are separately marked as size-evictable so S3-FIFO can still reclaim build
-// artifacts when the cache reaches its size limit.
+// Build cache entries deliberately do not pin their blobs. S3-FIFO and full GC
+// may reclaim build artifacts; a mapping whose blob has been removed is treated
+// as a cache miss and later removed by normal TTL expiry.
 func (idx *Index) Put(ctx context.Context, actionID string, entry *ActionEntry) error {
-	return idx.entries.PutJSONWithOptions(ctx, actionID, entry, []string{entry.BlobHash}, metadb.PutOptions{
-		SizeEvictable: true,
-	})
+	return idx.entries.PutJSON(ctx, actionID, entry, nil)
 }

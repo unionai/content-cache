@@ -36,7 +36,7 @@ func (b *BoltDB) VerifyEnvelopeRefcounts(ctx context.Context) ([]RefcountDiscrep
 			if err := proto.Unmarshal(v, &env); err != nil {
 				continue
 			}
-			for _, ref := range protectedRefs(&env) {
+			for _, ref := range env.BlobRefs {
 				computed[ref]++
 			}
 		}
@@ -113,7 +113,7 @@ func (b *BoltDB) RebuildEnvelopeRefcounts(ctx context.Context) (int, error) {
 			if err := proto.Unmarshal(v, &env); err != nil {
 				continue
 			}
-			for _, ref := range protectedRefs(&env) {
+			for _, ref := range env.BlobRefs {
 				computed[ref]++
 			}
 		}
