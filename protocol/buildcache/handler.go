@@ -134,6 +134,14 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 		return
 	}
 
+	lease, leader := h.uploads.acquire(actionID, outputID)
+	if !leader {
+		telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadInflightFollower)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	defer lease.release()
+
 	entry, err := h.index.Get(ctx, actionID)
 	switch {
 	case err == nil && entry.OutputID == outputID:
@@ -157,12 +165,6 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 		return
 	}
 
-	lease, leader := h.uploads.acquire(actionID, outputID)
-	if !leader {
-		telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadInflightFollower)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadLeader)
 	leaderSucceeded := false
 	defer func() {
@@ -172,7 +174,6 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 		}
 		telemetry.RecordBuildCacheUpload(context.Background(), event)
 	}()
-	defer lease.release()
 	stopCancellationCleanup := context.AfterFunc(ctx, lease.release)
 	defer stopCancellationCleanup()
 
