@@ -107,6 +107,12 @@ func NewManager(queues Queues, mdb metadb.MetaDB, b backend.Backend, cfg Config)
 	if err := m.recomputeState(context.Background()); err != nil {
 		return nil, fmt.Errorf("s3fifo: recomputing state: %w", err)
 	}
+	smallTarget := m.config.MaxSize * int64(m.config.SmallQueuePercent) / 100
+	telemetry.UpdateS3FIFOQueueState(context.Background(),
+		m.smallBytes, m.mainBytes,
+		m.smallLen, m.mainLen, m.ghostLen,
+		m.config.MaxSize, smallTarget,
+	)
 
 	return m, nil
 }
