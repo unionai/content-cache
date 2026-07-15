@@ -1,8 +1,11 @@
 package buildcache
 
 import (
+	"context"
 	"sync"
 	"time"
+
+	"github.com/buildkite/content-cache/telemetry"
 )
 
 type uploadKey struct {
@@ -27,13 +30,11 @@ type uploadRegistry struct {
 	nextGeneration uint64
 	ttl            time.Duration
 	scheduleExpiry func(time.Duration, func()) func() bool
-	onCountChanged func(int)
 }
 
 func newUploadRegistry(
 	ttl time.Duration,
 	scheduleExpiry func(time.Duration, func()) func() bool,
-	onCountChanged func(int),
 ) *uploadRegistry {
 	if scheduleExpiry == nil {
 		scheduleExpiry = func(after time.Duration, expire func()) func() bool {
@@ -45,7 +46,6 @@ func newUploadRegistry(
 		entries:        make(map[uploadKey]*uploadEntry),
 		ttl:            ttl,
 		scheduleExpiry: scheduleExpiry,
-		onCountChanged: onCountChanged,
 	}
 }
 
@@ -66,7 +66,7 @@ func (r *uploadRegistry) acquire(actionID, outputID string) (*uploadLease, bool)
 		r.remove(key, generation, false)
 	})
 	r.mu.Unlock()
-	r.notifyCountChanged(1)
+	telemetry.AddBuildCacheUploadsInflight(context.Background(), 1)
 
 	return &uploadLease{registry: r, key: key, generation: generation}, true
 }
@@ -90,11 +90,5 @@ func (r *uploadRegistry) remove(key uploadKey, generation uint64, stopExpiry boo
 		entry.stopExpiry()
 	}
 	r.mu.Unlock()
-	r.notifyCountChanged(-1)
-}
-
-func (r *uploadRegistry) notifyCountChanged(delta int) {
-	if r.onCountChanged != nil {
-		r.onCountChanged(delta)
-	}
+	telemetry.AddBuildCacheUploadsInflight(context.Background(), -1)
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestUploadRegistryCoalescesOnlyMatchingOutputs(t *testing.T) {
-	registry := newUploadRegistry(time.Minute, nil, nil)
+	registry := newUploadRegistry(time.Minute, nil)
 
 	first, leader := registry.acquire("action", "output-1")
 	require.True(t, leader)
@@ -33,7 +33,7 @@ func TestUploadRegistryExpiryIsGenerationSafe(t *testing.T) {
 		expiries = append(expiries, expire)
 		return func() bool { return true }
 	}
-	registry := newUploadRegistry(time.Minute, schedule, nil)
+	registry := newUploadRegistry(time.Minute, schedule)
 
 	first, leader := registry.acquire("action", "output")
 	require.True(t, leader)

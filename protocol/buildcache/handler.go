@@ -40,12 +40,10 @@ func WithLogger(logger *slog.Logger) HandlerOption {
 // NewHandler creates a new build cache handler.
 func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		index:  index,
-		store:  store,
-		logger: slog.Default(),
-		uploads: newUploadRegistry(uploadRegistrationTTL, nil, func(delta int) {
-			telemetry.AddBuildCacheUploadsInflight(context.Background(), delta)
-		}),
+		index:   index,
+		store:   store,
+		logger:  slog.Default(),
+		uploads: newUploadRegistry(uploadRegistrationTTL, nil),
 	}
 	for _, opt := range opts {
 		opt(h)
