@@ -197,6 +197,7 @@ func TestEvictionDeletesOutsideManagerLock(t *testing.T) {
 	evictedHash := putBlob(t, ctx, mdb, b, "0123456789")
 	deleteCalled := false
 	managerUnlocked := false
+	queueUnlocked := false
 	mgr.backend = &observingDeleteBackend{
 		Backend: b,
 		onDelete: func() {
@@ -204,6 +205,10 @@ func TestEvictionDeletesOutsideManagerLock(t *testing.T) {
 			managerUnlocked = mgr.mu.TryLock()
 			if managerUnlocked {
 				mgr.mu.Unlock()
+			}
+			queueUnlocked = mgr.queueMu.TryLock()
+			if queueUnlocked {
+				mgr.queueMu.Unlock()
 			}
 		},
 	}
@@ -213,6 +218,7 @@ func TestEvictionDeletesOutsideManagerLock(t *testing.T) {
 
 	require.True(t, deleteCalled)
 	require.True(t, managerUnlocked, "backend deletion must run outside the manager lock")
+	require.True(t, queueUnlocked, "backend deletion must run outside the queue lock")
 }
 
 func TestEvictionDeleteFailureRestoresQueueState(t *testing.T) {
@@ -360,6 +366,31 @@ func TestPinnedBlobSkipped(t *testing.T) {
 	require.True(t, exists)
 }
 
+func TestSizeEvictableReferencesDoNotPinBlob(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+	content := "0123456789"
+	hash := putBlob(t, ctx, mdb, b, content)
+	size := int64(len(content))
+
+	entry, err := mdb.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Zero(t, entry.RefCount)
+
+	idx, err := metadb.NewEnvelopeIndex(mdb, "buildcache", "entry", time.Hour)
+	require.NoError(t, err)
+	require.NoError(t, idx.PutWithOptions(ctx, "action", []byte(`{}`), metadb.ContentType_CONTENT_TYPE_JSON, []string{hash}, metadb.PutOptions{
+		SizeEvictable: true,
+	}))
+
+	mgr.Admit(ctx, hash, size)
+	mgr.maybeEvict(ctx)
+
+	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
+	require.NoError(t, err)
+	require.False(t, exists, "references marked size-evictable must not block S3FIFO")
+}
+
 func TestPinnedOverlimitDoesNotImmediatelyReschedule(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
@@ -484,6 +515,33 @@ func TestRecomputeBytes(t *testing.T) {
 	defer mgr.mu.Unlock()
 	require.Equal(t, int64(10), mgr.smallBytes)
 	require.Equal(t, int64(0), mgr.mainBytes)
+}
+
+func TestNewManagerSignalsEvictionForPersistedOverlimitState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	mdb := metadb.NewBoltDB(metadb.WithNoSync(true))
+	require.NoError(t, mdb.Open(dir+"/meta.db"))
+	t.Cleanup(func() { require.NoError(t, mdb.Close()) })
+
+	fsBackend, err := backend.NewFilesystem(dir + "/blobs")
+	require.NoError(t, err)
+	hash := putBlob(t, ctx, mdb, fsBackend, "0123456789")
+
+	queues, err := NewBoltQueues(mdb.DB())
+	require.NoError(t, err)
+	_, err = queues.PushHead(QueueSmall, hash)
+	require.NoError(t, err)
+
+	mgr, err := NewManager(queues, mdb, fsBackend, Config{MaxSize: 5})
+	require.NoError(t, err)
+
+	select {
+	case <-mgr.evictCh:
+	default:
+		require.Fail(t, "persisted over-limit state must schedule eviction at startup")
+	}
 }
 
 func TestOrphanedQueueEntryCleanup(t *testing.T) {

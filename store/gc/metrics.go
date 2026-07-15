@@ -40,7 +40,7 @@ func NewMetrics(meter metric.Meter) (*Metrics, error) {
 
 	unreferencedBlobsDeleted, err := meter.Int64Counter(
 		"content_cache_gc_unreferenced_blobs_deleted_total",
-		metric.WithDescription("Total number of unreferenced blobs deleted (RefCount==0)"),
+		metric.WithDescription("Total number of blobs deleted without live metadata references"),
 		metric.WithUnit("{blob}"),
 	)
 	if err != nil {

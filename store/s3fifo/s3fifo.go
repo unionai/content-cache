@@ -113,6 +113,9 @@ func NewManager(queues Queues, mdb metadb.MetaDB, b backend.Backend, cfg Config)
 		m.smallLen, m.mainLen, m.ghostLen,
 		m.config.MaxSize, smallTarget,
 	)
+	if m.smallBytes+m.mainBytes > m.config.MaxSize {
+		m.evictCh <- struct{}{}
+	}
 
 	return m, nil
 }

@@ -165,7 +165,7 @@ func TestIndexGetPut(t *testing.T) {
 	require.Equal(t, entry.Size, got.Size)
 }
 
-func TestIndexEntryDoesNotPinBlob(t *testing.T) {
+func TestIndexEntryKeepsBlobReferencedForGC(t *testing.T) {
 	tmpDir := t.TempDir()
 	db := metadb.NewBoltDB(metadb.WithNoSync(true))
 	err := db.Open(filepath.Join(tmpDir, "meta.db"))
@@ -193,7 +193,11 @@ func TestIndexEntryDoesNotPinBlob(t *testing.T) {
 
 	blob, err := db.GetBlob(ctx, blobRef)
 	require.NoError(t, err)
-	require.Zero(t, blob.RefCount, "build cache mappings must not block size eviction")
+	require.Zero(t, blob.RefCount, "build cache mappings must not protect blobs from size eviction")
+
+	unreferenced, err := db.GetUnreferencedBlobs(ctx, time.Time{}, 10)
+	require.NoError(t, err)
+	require.Empty(t, unreferenced, "a live build cache mapping must protect its blob from full GC")
 
 	got, err := idx.Get(ctx, "aa00")
 	require.NoError(t, err)

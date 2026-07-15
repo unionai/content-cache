@@ -33,6 +33,8 @@ const (
 
 	// CurrentEnvelopeVersion is the current envelope schema version.
 	CurrentEnvelopeVersion = 1
+
+	sizeEvictableRefsAttribute = "content-cache.size-evictable-refs"
 )
 
 var (
@@ -54,6 +56,31 @@ var (
 	// ErrInvalidDigestFormat is returned when a blob ref has invalid format.
 	ErrInvalidDigestFormat = errors.New("invalid digest format")
 )
+
+func markSizeEvictableRefs(env *MetadataEnvelope) {
+	if env.Attributes == nil {
+		env.Attributes = make(map[string][]byte, 1)
+	}
+	env.Attributes[sizeEvictableRefsAttribute] = []byte{1}
+}
+
+func sizeEvictableRefs(env *MetadataEnvelope) []string {
+	if !refsAreSizeEvictable(env) {
+		return nil
+	}
+	return env.BlobRefs
+}
+
+func protectedRefs(env *MetadataEnvelope) []string {
+	if env == nil || refsAreSizeEvictable(env) {
+		return nil
+	}
+	return env.BlobRefs
+}
+
+func refsAreSizeEvictable(env *MetadataEnvelope) bool {
+	return env != nil && bytes.Equal(env.Attributes[sizeEvictableRefsAttribute], []byte{1})
+}
 
 // EnvelopeCodec handles envelope encoding/decoding with optional compression.
 // encoderPool holds reusable zstd encoders; decoder is goroutine-safe.

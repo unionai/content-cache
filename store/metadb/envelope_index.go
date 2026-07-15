@@ -74,6 +74,7 @@ type PutOptions struct {
 	LastModified   time.Time     // Last-Modified from upstream
 	Upstream       string        // Upstream host
 	UpstreamStatus uint32        // HTTP status from upstream
+	SizeEvictable  bool          // Blob refs remain GC-reachable but may be evicted by S3FIFO
 }
 
 // PutWithOptions stores raw bytes with full control over envelope fields.
@@ -112,6 +113,9 @@ func (idx *EnvelopeIndex) PutWithOptions(ctx context.Context, key string, data [
 
 	if !opts.LastModified.IsZero() {
 		env.LastModifiedUnixMs = opts.LastModified.UnixMilli()
+	}
+	if opts.SizeEvictable {
+		markSizeEvictableRefs(env)
 	}
 
 	return idx.store.PutEnvelope(ctx, idx.protocol, idx.kind, key, env)

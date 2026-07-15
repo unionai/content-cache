@@ -73,6 +73,7 @@ type ServeCmd struct {
 	CacheMaxSize        int64         `kong:"name='cache-max-size',default='10737418240',env='CACHE_MAX_SIZE',help='Maximum cache size in bytes (default: 10GB, 0 to disable)',group='Cache'"`
 	ExpiryCheckInterval time.Duration `kong:"name='expiry-check-interval',default='1h',env='EXPIRY_CHECK_INTERVAL',help='How often to check for expired content',group='Cache'"`
 	GCInterval          time.Duration `kong:"name='gc-interval',default='1h',env='GC_INTERVAL',help='How often to run garbage collection',group='Cache'"`
+	S3FIFOCheckInterval time.Duration `kong:"name='s3fifo-check-interval',default='30s',env='S3FIFO_CHECK_INTERVAL',help='How often to run the S3-FIFO size-eviction safety check',group='Cache'"`
 	GCStartupDelay      time.Duration `kong:"name='gc-startup-delay',default='5m',env='GC_STARTUP_DELAY',help='Delay before first GC run after startup',group='Cache'"`
 
 	MetadataDSN string `kong:"name='metadata-dsn',env='METADATA_DSN',help='Metadata database path (default: <storage>/metadata.db)',group='Storage'"`
@@ -294,6 +295,7 @@ func (cmd *ServeCmd) Run() error {
 		CacheMaxSize:                       cmd.CacheMaxSize,
 		ExpiryCheckInterval:                cmd.ExpiryCheckInterval,
 		GCInterval:                         cmd.GCInterval,
+		S3FIFOCheckInterval:                cmd.S3FIFOCheckInterval,
 		GCStartupDelay:                     cmd.GCStartupDelay,
 		MetadataDSN:                        cmd.MetadataDSN,
 		Logger:                             logger,

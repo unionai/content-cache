@@ -21,6 +21,18 @@ func TestNewRejectsGitHubAppRoutesWithoutTrustedSingleTenant(t *testing.T) {
 	require.Contains(t, err.Error(), "trusted single-tenant")
 }
 
+func TestS3FIFOConfigUsesIndependentCheckInterval(t *testing.T) {
+	cfg := Config{
+		CacheMaxSize:        1024,
+		GCInterval:          time.Hour,
+		S3FIFOCheckInterval: 17 * time.Second,
+		Logger:              slog.Default(),
+	}
+
+	s3fifoCfg := makeS3FIFOConfig(cfg)
+	require.Equal(t, 17*time.Second, s3fifoCfg.CheckInterval)
+}
+
 func TestValidateGitUpstreamAuth_AllowsTrustedSingleTenantGitHubApp(t *testing.T) {
 	err := validateGitUpstreamAuth(Config{
 		Credentials:                        credentialsWithGitHubAppRoute(),

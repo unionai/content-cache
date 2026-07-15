@@ -50,8 +50,8 @@ func (m *Manager) phaseExpireMeta(ctx context.Context, result *Result) {
 	}
 }
 
-// phaseDeleteUnreferenced deletes blobs with RefCount == 0 that have not been
-// accessed within the configured retention window.
+// phaseDeleteUnreferenced deletes blobs without protected or size-evictable
+// references that have not been accessed within the retention window.
 func (m *Manager) phaseDeleteUnreferenced(ctx context.Context, result *Result) {
 	m.logger.Debug("phase: delete unreferenced blobs")
 

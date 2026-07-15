@@ -149,6 +149,158 @@ func TestEnvelope_BlobRefTracking(t *testing.T) {
 	require.Equal(t, 0, blob2.RefCount)
 }
 
+func TestEnvelope_SizeEvictableBlobRefTracking(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+
+	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
+
+	protected := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash},
+	}
+	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "protected", protected))
+
+	evictable := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash},
+	}
+	markSizeEvictableRefs(evictable)
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "evictable", evictable))
+
+	blob, err := db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Equal(t, 1, blob.RefCount)
+	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sizeEvictableCount)
+	require.Positive(t, blob.RefCount, "the npm reference must protect the shared blob")
+
+	require.NoError(t, db.DeleteEnvelope(ctx, "npm", "metadata", "protected"))
+	blob, err = db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Zero(t, blob.RefCount, "only the size-evictable reference remains")
+	sizeEvictableCount, err = db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sizeEvictableCount)
+
+	require.NoError(t, db.DeleteEnvelope(ctx, "buildcache", "entry", "evictable"))
+	blob, err = db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Zero(t, blob.RefCount)
+	sizeEvictableCount, err = db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Zero(t, sizeEvictableCount)
+}
+
+func TestEnvelope_LegacyBuildCacheRefConvertsOnlyWhenRewritten(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
+
+	legacy := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash},
+	}
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "action", legacy))
+
+	blob, err := db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Equal(t, 1, blob.RefCount, "unmarked legacy refs remain size-protected")
+	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Zero(t, sizeEvictableCount)
+
+	rewritten := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash},
+	}
+	markSizeEvictableRefs(rewritten)
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "action", rewritten))
+
+	blob, err = db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Zero(t, blob.RefCount)
+	sizeEvictableCount, err = db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sizeEvictableCount)
+}
+
+func TestEnvelope_SizeEvictableRefSurvivesBlobDeletion(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
+
+	env := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash},
+	}
+	markSizeEvictableRefs(env)
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "action", env))
+	require.NoError(t, db.DeleteBlob(ctx, hash))
+
+	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sizeEvictableCount)
+	discrepancies, err := db.VerifyEnvelopeRefcounts(ctx)
+	require.NoError(t, err)
+	require.Empty(t, discrepancies, "an intentionally size-evicted blob is not a refcount discrepancy")
+
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
+	unreferenced, err := db.GetUnreferencedBlobs(ctx, time.Time{}, 10)
+	require.NoError(t, err)
+	require.Empty(t, unreferenced)
+}
+
+func TestEnvelope_UpdateTracksSizeEvictableRefs(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+	hash1 := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	hash2 := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash1, Size: 100}))
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash2, Size: 200}))
+	env := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		BlobRefs:        []string{hash1},
+	}
+	markSizeEvictableRefs(env)
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "action", env))
+
+	require.NoError(t, db.UpdateEnvelope(ctx, "buildcache", "entry", "action", func(current *MetadataEnvelope) (*MetadataEnvelope, error) {
+		current.BlobRefs = []string{hash2}
+		return current, nil
+	}))
+
+	blob1, err := db.GetBlob(ctx, hash1)
+	require.NoError(t, err)
+	require.Zero(t, blob1.RefCount)
+	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash1)
+	require.NoError(t, err)
+	require.Zero(t, sizeEvictableCount)
+	blob2, err := db.GetBlob(ctx, hash2)
+	require.NoError(t, err)
+	require.Zero(t, blob2.RefCount)
+	sizeEvictableCount, err = db.sizeEvictableBlobRefCount(hash2)
+	require.NoError(t, err)
+	require.Equal(t, uint64(1), sizeEvictableCount)
+}
+
 func TestEnvelope_ExpiryIndex(t *testing.T) {
 	now := time.Now()
 	db := NewBoltDB(WithNoSync(true), WithNow(func() time.Time { return now }))
@@ -211,6 +363,36 @@ func TestEnvelope_BatchDeleteExpired(t *testing.T) {
 	keys, err := db.ListEnvelopeKeys(ctx, "npm", "metadata")
 	require.NoError(t, err)
 	require.Empty(t, keys)
+}
+
+func TestEnvelope_BatchDeleteExpiredDecrementsSizeEvictableRefs(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+	cutoff := time.Unix(1_700_000_000, 0).UTC()
+	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
+	env := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		ExpiresAtUnixMs: cutoff.Add(-time.Second).UnixMilli(),
+		BlobRefs:        []string{hash},
+	}
+	markSizeEvictableRefs(env)
+	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "entry", "expired", env))
+
+	entries, err := db.GetExpiredEnvelopes(ctx, cutoff, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	require.NoError(t, db.DeleteExpiredEnvelopes(ctx, entries))
+
+	blob, err := db.GetBlob(ctx, hash)
+	require.NoError(t, err)
+	require.Zero(t, blob.RefCount)
+	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash)
+	require.NoError(t, err)
+	require.Zero(t, sizeEvictableCount)
 }
 
 func TestEnvelope_BatchDeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {

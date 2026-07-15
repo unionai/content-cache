@@ -3,6 +3,7 @@ package metadb
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -106,6 +107,7 @@ func (b *BoltDB) createBuckets() error {
 			bucketEnvelopeByExpiry,
 			bucketEnvelopeExpiryByKey,
 			bucketEnvelopeBlobRefs,
+			bucketSizeEvictableBlobRefs,
 		}
 		for _, name := range buckets {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
@@ -514,9 +516,10 @@ func (b *BoltDB) GetExpiredMeta(_ context.Context, before time.Time, limit int) 
 	return entries, err
 }
 
-// GetUnreferencedBlobs returns blobs with RefCount == 0 whose last access time
-// is before the given cutoff. When before is zero, no cutoff is applied and all
-// unreferenced blobs are returned regardless of age.
+// GetUnreferencedBlobs returns blobs with no protected or size-evictable
+// references whose last access time is before the given cutoff. When before is
+// zero, no cutoff is applied and all unreferenced blobs are returned regardless
+// of age.
 func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit int) ([]string, error) {
 	var hashes []string
 
@@ -525,6 +528,7 @@ func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit
 		if bucket == nil {
 			return nil
 		}
+		sizeEvictableRefsBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
 
 		return bucket.ForEach(func(k, v []byte) error {
 			if limit > 0 && len(hashes) >= limit {
@@ -538,6 +542,12 @@ func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit
 
 			if entry.RefCount != 0 {
 				return nil
+			}
+			if sizeEvictableRefsBucket != nil {
+				count, err := sizeEvictableBlobRefCountInTx(sizeEvictableRefsBucket, string(k))
+				if err != nil || count != 0 {
+					return nil
+				}
 			}
 
 			// Retention floor: skip blobs still within the retention window.
@@ -769,6 +779,64 @@ func (b *BoltDB) decrementBlobRefInTx(bucket *bbolt.Bucket, hash string) error {
 	return bucket.Put([]byte(hash), data)
 }
 
+func sizeEvictableBlobRefCountInTx(bucket *bbolt.Bucket, hash string) (uint64, error) {
+	val := bucket.Get([]byte(hash))
+	if val == nil {
+		return 0, nil
+	}
+	if len(val) != 8 {
+		return 0, fmt.Errorf("invalid size-evictable refcount for %s", hash)
+	}
+	return binary.BigEndian.Uint64(val), nil
+}
+
+func adjustSizeEvictableBlobRefInTx(bucket *bbolt.Bucket, hash string, delta int) error {
+	count, err := sizeEvictableBlobRefCountInTx(bucket, hash)
+	if err != nil {
+		return err
+	}
+
+	switch delta {
+	case -1:
+		if count <= 1 {
+			return bucket.Delete([]byte(hash))
+		}
+		count--
+	case 1:
+		if count == ^uint64(0) {
+			return fmt.Errorf("size-evictable refcount overflow for %s", hash)
+		}
+		count++
+	default:
+		return fmt.Errorf("invalid size-evictable refcount delta %d", delta)
+	}
+
+	return putSizeEvictableBlobRefCountInTx(bucket, hash, count)
+}
+
+func putSizeEvictableBlobRefCountInTx(bucket *bbolt.Bucket, hash string, count uint64) error {
+	if count == 0 {
+		return bucket.Delete([]byte(hash))
+	}
+	data := make([]byte, 8)
+	binary.BigEndian.PutUint64(data, count)
+	return bucket.Put([]byte(hash), data)
+}
+
+func (b *BoltDB) sizeEvictableBlobRefCount(hash string) (uint64, error) {
+	var count uint64
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		bucket := tx.Bucket(bucketSizeEvictableBlobRefs)
+		if bucket == nil {
+			return nil
+		}
+		var err error
+		count, err = sizeEvictableBlobRefCountInTx(bucket, hash)
+		return err
+	})
+	return count, err
+}
+
 // diffRefs computes added and removed refs between old and new sets.
 // added = newRefs - oldRefs (refs that were added)
 // removed = oldRefs - newRefs (refs that were removed)
@@ -897,14 +965,30 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 		if blobsBucket == nil {
 			return fmt.Errorf("blobs_by_hash bucket not found")
 		}
+		sizeEvictableRefsBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
+		if sizeEvictableRefsBucket == nil {
+			return fmt.Errorf("size_evictable_blob_refs bucket not found")
+		}
 
 		compoundKey := makeEnvelopeKey(protocol, kind, key)
 
 		// Get old refs for this key
 		oldRefs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
+		var oldEnv *MetadataEnvelope
+		if oldData := envBucket.Get(compoundKey); oldData != nil {
+			oldEnv = &MetadataEnvelope{}
+			if err := proto.Unmarshal(oldData, oldEnv); err != nil {
+				return fmt.Errorf("unmarshaling existing envelope: %w", err)
+			}
+		}
 
 		// Compute diff
-		added, removed := DiffRefs(oldRefs, env.BlobRefs)
+		oldProtectedRefs := protectedRefs(oldEnv)
+		if oldEnv == nil {
+			oldProtectedRefs = oldRefs
+		}
+		added, removed := DiffRefs(oldProtectedRefs, protectedRefs(env))
+		sizeEvictableAdded, sizeEvictableRemoved := DiffRefs(sizeEvictableRefs(oldEnv), sizeEvictableRefs(env))
 
 		// Update blob refcounts
 		for _, hash := range added {
@@ -915,6 +999,16 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 		for _, hash := range removed {
 			if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
 				return fmt.Errorf("decrementing ref for %s: %w", hash, err)
+			}
+		}
+		for _, hash := range sizeEvictableAdded {
+			if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, 1); err != nil {
+				return fmt.Errorf("incrementing size-evictable ref for %s: %w", hash, err)
+			}
+		}
+		for _, hash := range sizeEvictableRemoved {
+			if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, -1); err != nil {
+				return fmt.Errorf("decrementing size-evictable ref for %s: %w", hash, err)
 			}
 		}
 
@@ -975,20 +1069,43 @@ func (b *BoltDB) DeleteEnvelope(_ context.Context, protocol, kind, key string) e
 
 		refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
 		blobsBucket := tx.Bucket(bucketBlobsByHash)
+		sizeEvictableRefsBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
 
 		compoundKey := makeEnvelopeKey(protocol, kind, key)
+		var oldEnv *MetadataEnvelope
+		if oldData := envBucket.Get(compoundKey); oldData != nil {
+			oldEnv = &MetadataEnvelope{}
+			if err := proto.Unmarshal(oldData, oldEnv); err != nil {
+				return fmt.Errorf("unmarshaling existing envelope: %w", err)
+			}
+		}
 
 		// Get refs for this key and decrement all
-		if refsBucket != nil && blobsBucket != nil {
+		if refsBucket != nil {
 			refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
-			for _, hash := range refs {
-				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-					b.logger.Warn("failed to decrement blob ref during envelope delete",
-						"protocol", protocol,
-						"kind", kind,
-						"key", key,
-						"hash", hash,
-						"error", err)
+			if refsAreSizeEvictable(oldEnv) {
+				for _, hash := range refs {
+					if sizeEvictableRefsBucket != nil {
+						if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, -1); err != nil {
+							b.logger.Warn("failed to decrement size-evictable blob ref during envelope delete",
+								"protocol", protocol,
+								"kind", kind,
+								"key", key,
+								"hash", hash,
+								"error", err)
+						}
+					}
+				}
+			} else if blobsBucket != nil {
+				for _, hash := range refs {
+					if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
+						b.logger.Warn("failed to decrement blob ref during envelope delete",
+							"protocol", protocol,
+							"kind", kind,
+							"key", key,
+							"hash", hash,
+							"error", err)
+					}
 				}
 			}
 			if err := refsBucket.Delete(compoundKey); err != nil {
@@ -1046,6 +1163,10 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 		if blobsBucket == nil {
 			return fmt.Errorf("blobs_by_hash bucket not found")
 		}
+		sizeEvictableRefsBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
+		if sizeEvictableRefsBucket == nil {
+			return fmt.Errorf("size_evictable_blob_refs bucket not found")
+		}
 
 		compoundKey := makeEnvelopeKey(protocol, kind, key)
 
@@ -1061,6 +1182,13 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 
 		// Get old refs
 		oldRefs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
+		// The callback may mutate existing in place, so capture the old
+		// reference categories before invoking it.
+		oldProtectedRefs := append([]string(nil), protectedRefs(existing)...)
+		if existing == nil {
+			oldProtectedRefs = oldRefs
+		}
+		oldSizeEvictableRefs := append([]string(nil), sizeEvictableRefs(existing)...)
 
 		// Apply modification
 		newEnv, err := fn(existing)
@@ -1071,9 +1199,15 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 		// If callback returns nil, delete the entry
 		if newEnv == nil {
 			// Decrement all old refs
-			for _, hash := range oldRefs {
+			for _, hash := range oldProtectedRefs {
 				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
 					b.logger.Warn("failed to decrement blob ref during update delete",
+						"hash", hash, "error", err)
+				}
+			}
+			for _, hash := range oldSizeEvictableRefs {
+				if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, -1); err != nil {
+					b.logger.Warn("failed to decrement size-evictable blob ref during update delete",
 						"hash", hash, "error", err)
 				}
 			}
@@ -1093,7 +1227,8 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 		newEnv.BlobRefs = CanonicalizeRefs(newEnv.BlobRefs)
 
 		// Compute ref diff
-		added, removed := DiffRefs(oldRefs, newEnv.BlobRefs)
+		added, removed := DiffRefs(oldProtectedRefs, protectedRefs(newEnv))
+		sizeEvictableAdded, sizeEvictableRemoved := DiffRefs(oldSizeEvictableRefs, sizeEvictableRefs(newEnv))
 
 		// Update blob refcounts
 		for _, hash := range added {
@@ -1104,6 +1239,16 @@ func (b *BoltDB) UpdateEnvelope(ctx context.Context, protocol, kind, key string,
 		for _, hash := range removed {
 			if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
 				return fmt.Errorf("decrementing ref for %s: %w", hash, err)
+			}
+		}
+		for _, hash := range sizeEvictableAdded {
+			if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, 1); err != nil {
+				return fmt.Errorf("incrementing size-evictable ref for %s: %w", hash, err)
+			}
+		}
+		for _, hash := range sizeEvictableRemoved {
+			if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, -1); err != nil {
+				return fmt.Errorf("decrementing size-evictable ref for %s: %w", hash, err)
 			}
 		}
 
@@ -1247,6 +1392,7 @@ func (b *BoltDB) DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeE
 		envBucket := tx.Bucket(bucketEnvelopes)
 		refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
 		blobsBucket := tx.Bucket(bucketBlobsByHash)
+		sizeEvictableRefsBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
 		expiryBucket := tx.Bucket(bucketEnvelopeByExpiry)
 		reverseIndexBucket := tx.Bucket(bucketEnvelopeExpiryByKey)
 
@@ -1261,17 +1407,42 @@ func (b *BoltDB) DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeE
 				continue
 			}
 
+			var currentEnv *MetadataEnvelope
+			if envBucket != nil {
+				if data := envBucket.Get(compoundKey); data != nil {
+					currentEnv = &MetadataEnvelope{}
+					if err := proto.Unmarshal(data, currentEnv); err != nil {
+						return fmt.Errorf("unmarshaling expired envelope: %w", err)
+					}
+				}
+			}
+
 			// Decrement blob refs
-			if refsBucket != nil && blobsBucket != nil {
+			if refsBucket != nil {
 				refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
-				for _, hash := range refs {
-					if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-						b.logger.Warn("failed to decrement blob ref during expiry delete",
-							"protocol", entry.Protocol,
-							"kind", entry.Kind,
-							"key", entry.Key,
-							"hash", hash,
-							"error", err)
+				if refsAreSizeEvictable(currentEnv) {
+					for _, hash := range refs {
+						if sizeEvictableRefsBucket != nil {
+							if err := adjustSizeEvictableBlobRefInTx(sizeEvictableRefsBucket, hash, -1); err != nil {
+								b.logger.Warn("failed to decrement size-evictable blob ref during expiry delete",
+									"protocol", entry.Protocol,
+									"kind", entry.Kind,
+									"key", entry.Key,
+									"hash", hash,
+									"error", err)
+							}
+						}
+					}
+				} else if blobsBucket != nil {
+					for _, hash := range refs {
+						if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
+							b.logger.Warn("failed to decrement blob ref during expiry delete",
+								"protocol", entry.Protocol,
+								"kind", entry.Kind,
+								"key", entry.Key,
+								"hash", hash,
+								"error", err)
+						}
 					}
 				}
 				_ = refsBucket.Delete(compoundKey)

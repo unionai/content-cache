@@ -25,6 +25,8 @@ var (
 	bucketEnvelopeByExpiry    = []byte("envelope_by_expiry")     // timestamp|protocol|kind|key -> protocol|kind|key
 	bucketEnvelopeExpiryByKey = []byte("envelope_expiry_by_key") // protocol|kind|key -> 8-byte timestamp (reverse index)
 	bucketEnvelopeBlobRefs    = []byte("envelope_blob_refs")     // protocol|kind|key -> JSON array of hashes
+	// Blob hash -> 8-byte count of envelope refs that protect from GC but not size eviction.
+	bucketSizeEvictableBlobRefs = []byte("size_evictable_blob_refs")
 )
 
 // encodeTimestamp converts a time.Time to a fixed-width big-endian byte slice.

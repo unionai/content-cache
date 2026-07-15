@@ -148,7 +148,7 @@ type Config struct {
 	UpstreamSumDB string
 
 	// BlobRetention is the minimum time a blob is kept after its last access
-	// before GC may delete it, even when its RefCount drops to zero.
+	// before GC may delete it after its metadata references drop to zero.
 	// Zero disables the retention floor.
 	BlobRetention time.Duration
 
@@ -163,6 +163,11 @@ type Config struct {
 
 	// GCInterval is how often to run garbage collection.
 	GCInterval time.Duration
+
+	// S3FIFOCheckInterval is how often to run the size-eviction safety check.
+	// Admission and startup signals normally trigger eviction sooner.
+	// Default is 30 seconds.
+	S3FIFOCheckInterval time.Duration
 
 	// GCStartupDelay is the delay before first GC run.
 	GCStartupDelay time.Duration
@@ -326,14 +331,7 @@ func New(cfg Config) (*Server, error) {
 		if qErr != nil {
 			return nil, fmt.Errorf("creating s3fifo queues: %w", qErr)
 		}
-		s3fifoCfg := s3fifo.Config{
-			MaxSize: cfg.CacheMaxSize,
-			// CheckInterval is a safety-net ticker; real eviction is signal-driven
-			// via Admit. Align the tick with the GC cycle so background maintenance
-			// runs at a consistent cadence.
-			CheckInterval: cfg.GCInterval,
-			Logger:        cfg.Logger.With("component", "s3fifo"),
-		}
+		s3fifoCfg := makeS3FIFOConfig(cfg)
 		var s3err error
 		s3fifoMgr, s3err = s3fifo.NewManager(queues, metaDB, instrumentedBackend, s3fifoCfg)
 		if s3err != nil {
@@ -855,6 +853,14 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func makeS3FIFOConfig(cfg Config) s3fifo.Config {
+	return s3fifo.Config{
+		MaxSize:       cfg.CacheMaxSize,
+		CheckInterval: cfg.S3FIFOCheckInterval,
+		Logger:        cfg.Logger.With("component", "s3fifo"),
+	}
 }
 
 // selectAuthMiddleware returns the appropriate auth middleware based on config.

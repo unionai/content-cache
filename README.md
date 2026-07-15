@@ -36,11 +36,11 @@ Size eviction activates automatically when `--cache-max-size` is set. The GC con
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cache-max-size` | `10737418240` (10 GB) | Total byte limit for cached blobs. Set to `0` to disable size eviction. |
-| `--gc-interval` | `1h` | How often the background eviction safety-net tick fires. Real eviction is signal-driven and happens inline after each cache write. |
+| `--s3fifo-check-interval` | `30s` | How often the background eviction safety-net tick fires. Real eviction is signal-driven after each cache write and at startup when reconstructed state is over limit. |
 
 ### Startup behaviour
 
-Queue state is persisted in bbolt, so eviction is warm across restarts — the manager recomputes byte totals from the persisted queue on startup and resumes where it left off. Blobs that were written before S3-FIFO was first enabled (e.g. files left on disk from a previous deployment) will not appear in any queue and will not be subject to size eviction until they are naturally expired by TTL or cleaned up by GC.
+Queue state is persisted in bbolt, so eviction is warm across restarts — the manager recomputes byte totals from the persisted queue on startup, immediately schedules cleanup when over limit, and resumes where it left off. Blobs that were written before S3-FIFO was first enabled (e.g. files left on disk from a previous deployment) will not appear in any queue and will not be subject to size eviction until they are naturally expired by TTL or cleaned up by GC.
 
 ## Quick Start
 
@@ -446,6 +446,7 @@ Point clients at `http://host/httpcache/`.
 | `--cache-max-size` | `CACHE_MAX_SIZE` | `10737418240` | Maximum cache size in bytes (10GB, 0 to disable) |
 | `--expiry-check-interval` | `EXPIRY_CHECK_INTERVAL` | `1h` | How often to check for expired content |
 | `--gc-interval` | `GC_INTERVAL` | `1h` | How often to run garbage collection |
+| `--s3fifo-check-interval` | `S3FIFO_CHECK_INTERVAL` | `30s` | How often to run the S3-FIFO size-eviction safety check |
 | `--gc-startup-delay` | `GC_STARTUP_DELAY` | `5m` | Delay before first GC run after startup |
 
 ### Logging Options
