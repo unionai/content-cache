@@ -187,7 +187,7 @@ func TestEnvelope_ExpiryIndex(t *testing.T) {
 	require.Equal(t, "expired-2", expired[1].Key)
 }
 
-func TestEnvelope_BatchDeleteExpired(t *testing.T) {
+func TestEnvelope_DeleteExpired(t *testing.T) {
 	db := setupEnvelopeTestDB(t)
 	ctx := context.Background()
 
@@ -206,14 +206,18 @@ func TestEnvelope_BatchDeleteExpired(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
 
-	require.NoError(t, db.DeleteExpiredEnvelopes(ctx, entries))
+	for _, entry := range entries {
+		deleted, err := db.DeleteExpiredEnvelope(ctx, entry)
+		require.NoError(t, err)
+		require.True(t, deleted)
+	}
 
 	keys, err := db.ListEnvelopeKeys(ctx, "npm", "metadata")
 	require.NoError(t, err)
 	require.Empty(t, keys)
 }
 
-func TestEnvelope_BatchDeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {
+func TestEnvelope_DeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {
 	db := setupEnvelopeTestDB(t)
 	ctx := context.Background()
 
@@ -245,7 +249,9 @@ func TestEnvelope_BatchDeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {
 	}
 	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg", refreshed))
 
-	require.NoError(t, db.DeleteExpiredEnvelopes(ctx, entries))
+	deleted, err := db.DeleteExpiredEnvelope(ctx, entries[0])
+	require.NoError(t, err)
+	require.False(t, deleted)
 
 	env, err := db.GetEnvelope(ctx, "npm", "metadata", "pkg")
 	require.NoError(t, err)

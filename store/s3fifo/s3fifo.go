@@ -163,7 +163,7 @@ func (m *Manager) Admit(ctx context.Context, hash string, size int64) {
 			admitted = true
 		}
 	} else {
-		replaced, err := m.queues.PushHeadBatched(QueueSmall, hash)
+		replaced, err := m.queues.PushHead(QueueSmall, hash)
 		if err != nil {
 			m.queueMu.RUnlock()
 			m.logger.Warn("s3fifo: push to small queue failed", "hash", hash, "error", err)
