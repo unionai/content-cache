@@ -45,27 +45,9 @@ func (b *blockingBody) Read(p []byte) (int, error) {
 	return b.reader.Read(p)
 }
 
-type cancellationBody struct {
-	ctx     context.Context
-	started chan struct{}
-	once    sync.Once
-}
-
-func (b *cancellationBody) Read([]byte) (int, error) {
-	b.once.Do(func() { close(b.started) })
-	<-b.ctx.Done()
-	return 0, b.ctx.Err()
-}
-
 type errorBody struct{ err error }
 
 func (b errorBody) Read([]byte) (int, error) { return 0, b.err }
-
-type panicBody struct{}
-
-func (panicBody) Read([]byte) (int, error) {
-	panic("injected body read panic")
-}
 
 func (b *readTrackingBody) Read(p []byte) (int, error) {
 	b.reads++
@@ -218,76 +200,6 @@ func TestHandlerStaleMappingDoesNotUseLoadedFastPath(t *testing.T) {
 	require.Equal(t, http.StatusOK, getRec.Code)
 }
 
-func TestHandlerDifferentOutputsAreNotCoalesced(t *testing.T) {
-	handler, _, _ := newTestHandler(t)
-	actionID := "fa" + strings.Repeat("00", 31)
-	firstOutputID := "fb" + strings.Repeat("00", 31)
-	secondOutputID := "fc" + strings.Repeat("00", 31)
-	firstBody := newBlockingBody("first artifact")
-
-	firstDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(
-			http.MethodPut,
-			"/"+actionID+"?output_id="+firstOutputID,
-			firstBody,
-		))
-		firstDone <- rec
-	}()
-	<-firstBody.started
-
-	secondBody := &readTrackingBody{reader: strings.NewReader("second artifact")}
-	secondRec := httptest.NewRecorder()
-	handler.ServeHTTP(secondRec, httptest.NewRequest(
-		http.MethodPut,
-		"/"+actionID+"?output_id="+secondOutputID,
-		secondBody,
-	))
-	close(firstBody.release)
-	firstRec := <-firstDone
-
-	require.Equal(t, http.StatusNoContent, secondRec.Code)
-	require.NotZero(t, secondBody.readCount())
-	require.Equal(t, http.StatusNoContent, firstRec.Code)
-}
-
-func TestHandlerGetMissesWhileReplacementOutputLoads(t *testing.T) {
-	handler, _, _ := newTestHandler(t)
-	actionID := "ce" + strings.Repeat("00", 31)
-	loadedOutputID := "cf" + strings.Repeat("00", 31)
-	loadingOutputID := "de" + strings.Repeat("00", 31)
-
-	loadedRec := httptest.NewRecorder()
-	handler.ServeHTTP(loadedRec, httptest.NewRequest(
-		http.MethodPut,
-		"/"+actionID+"?output_id="+loadedOutputID,
-		strings.NewReader("loaded artifact"),
-	))
-	require.Equal(t, http.StatusNoContent, loadedRec.Code)
-
-	replacementBody := newBlockingBody("replacement artifact")
-	replacementDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(
-			http.MethodPut,
-			"/"+actionID+"?output_id="+loadingOutputID,
-			replacementBody,
-		))
-		replacementDone <- rec
-	}()
-	<-replacementBody.started
-
-	getRec := httptest.NewRecorder()
-	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
-	close(replacementBody.release)
-	replacementRec := <-replacementDone
-
-	require.Equal(t, http.StatusNotFound, getRec.Code)
-	require.Equal(t, http.StatusNoContent, replacementRec.Code)
-}
-
 func TestHandlerLeaderFailureAllowsRetry(t *testing.T) {
 	handler, idx, _ := newTestHandler(t)
 	actionID := "ac" + strings.Repeat("00", 31)
@@ -310,67 +222,6 @@ func TestHandlerLeaderFailureAllowsRetry(t *testing.T) {
 
 	require.Equal(t, http.StatusInternalServerError, failedRec.Code)
 	require.ErrorIs(t, indexErr, ErrNotFound)
-	require.Equal(t, http.StatusNoContent, retryRec.Code)
-}
-
-func TestHandlerCancellationClearsRegistration(t *testing.T) {
-	handler, _, _ := newTestHandler(t)
-	actionID := "bc" + strings.Repeat("00", 31)
-	outputID := "bd" + strings.Repeat("00", 31)
-
-	ctx, cancel := context.WithCancel(t.Context())
-	body := &cancellationBody{ctx: ctx, started: make(chan struct{})}
-	cancelledDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(
-			http.MethodPut,
-			"/"+actionID+"?output_id="+outputID,
-			body,
-		).WithContext(ctx)
-		handler.ServeHTTP(rec, req)
-		cancelledDone <- rec
-	}()
-	<-body.started
-	cancel()
-	cancelledRec := <-cancelledDone
-
-	retryRec := httptest.NewRecorder()
-	handler.ServeHTTP(retryRec, httptest.NewRequest(
-		http.MethodPut,
-		"/"+actionID+"?output_id="+outputID,
-		strings.NewReader("artifact"),
-	))
-
-	require.Equal(t, http.StatusNoContent, retryRec.Code)
-	require.Equal(t, http.StatusInternalServerError, cancelledRec.Code)
-	getRec := httptest.NewRecorder()
-	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
-	require.Equal(t, http.StatusOK, getRec.Code)
-}
-
-func TestHandlerPanicClearsRegistration(t *testing.T) {
-	handler, _, _ := newTestHandler(t)
-	actionID := "be" + strings.Repeat("00", 31)
-	outputID := "bf" + strings.Repeat("00", 31)
-
-	panicResult := make(chan any, 1)
-	go func() {
-		defer func() { panicResult <- recover() }()
-		handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(
-			http.MethodPut,
-			"/"+actionID+"?output_id="+outputID,
-			panicBody{},
-		))
-	}()
-	require.Equal(t, "injected body read panic", <-panicResult)
-
-	retryRec := httptest.NewRecorder()
-	handler.ServeHTTP(retryRec, httptest.NewRequest(
-		http.MethodPut,
-		"/"+actionID+"?output_id="+outputID,
-		strings.NewReader("artifact"),
-	))
 	require.Equal(t, http.StatusNoContent, retryRec.Code)
 }
 

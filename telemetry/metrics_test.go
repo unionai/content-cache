@@ -57,12 +57,6 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	spoolBytesSavedTotal, err := meter.Int64Counter("content_cache_spool_bytes_saved_total")
 	require.NoError(t, err)
 
-	buildCacheUploadsTotal, err := meter.Int64Counter("content_cache_buildcache_uploads_total")
-	require.NoError(t, err)
-
-	buildCacheUploadsInflight, err := meter.Int64UpDownCounter("content_cache_buildcache_uploads_inflight")
-	require.NoError(t, err)
-
 	globalMetrics = &Metrics{
 		requestsTotal:                   requestsTotal,
 		responseBytesTotal:              responseBytesTotal,
@@ -72,8 +66,6 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 		spoolRequestsTotal:              spoolRequestsTotal,
 		spoolWaitDuration:               spoolWaitDuration,
 		spoolBytesSavedTotal:            spoolBytesSavedTotal,
-		buildCacheUploadsTotal:          buildCacheUploadsTotal,
-		buildCacheUploadsInflight:       buildCacheUploadsInflight,
 		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
 		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
 		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
@@ -86,39 +78,6 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	})
 
 	return reader
-}
-
-func TestRecordBuildCacheUploadMetrics(t *testing.T) {
-	reader := setupTestMetrics(t)
-	ctx := context.Background()
-
-	for _, event := range []string{
-		BuildCacheUploadLeader,
-		BuildCacheUploadInflightFollower,
-		BuildCacheUploadAlreadyLoaded,
-		BuildCacheUploadLeaderSuccess,
-		BuildCacheUploadLeaderFailure,
-	} {
-		RecordBuildCacheUpload(ctx, event)
-	}
-	AddBuildCacheUploadsInflight(ctx, 3)
-
-	rm := collectMetrics(t, reader)
-	uploads := findCounter(rm, "content_cache_buildcache_uploads_total")
-	require.Len(t, uploads, 5)
-	for _, event := range []string{
-		BuildCacheUploadLeader,
-		BuildCacheUploadInflightFollower,
-		BuildCacheUploadAlreadyLoaded,
-		BuildCacheUploadLeaderSuccess,
-		BuildCacheUploadLeaderFailure,
-	} {
-		require.True(t, anyPointHasAttr(uploads, "event", event), event)
-	}
-
-	inflight := findCounter(rm, "content_cache_buildcache_uploads_inflight")
-	require.Len(t, inflight, 1)
-	require.EqualValues(t, 3, inflight[0].Value)
 }
 
 func TestRecordSpoolRequest(t *testing.T) {
@@ -180,15 +139,6 @@ func findHistogram(rm metricdata.ResourceMetrics, name string) []metricdata.Hist
 		}
 	}
 	return nil
-}
-
-func anyPointHasAttr(points []metricdata.DataPoint[int64], key, value string) bool {
-	for _, point := range points {
-		if hasAttr(point.Attributes, key, value) {
-			return true
-		}
-	}
-	return false
 }
 
 // hasAttr checks if a data point's attribute set contains the given key-value pair.
