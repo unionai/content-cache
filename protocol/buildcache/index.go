@@ -29,7 +29,12 @@ func (idx *Index) Get(ctx context.Context, actionID string) (*ActionEntry, error
 	return &entry, nil
 }
 
-// Put stores an entry for the given actionID, referencing the blob.
+// Put stores an entry for the given actionID.
+//
+// Build cache entries deliberately do not pin their blobs. S3-FIFO must be
+// able to evict build artifacts when the cache reaches its size limit. A
+// mapping whose blob has been evicted is safe: the handler treats it as a
+// cache miss, and the mapping is removed later by normal TTL expiry.
 func (idx *Index) Put(ctx context.Context, actionID string, entry *ActionEntry) error {
-	return idx.entries.PutJSON(ctx, actionID, entry, []string{entry.BlobHash})
+	return idx.entries.PutJSON(ctx, actionID, entry, nil)
 }

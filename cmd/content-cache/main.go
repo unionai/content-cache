@@ -66,6 +66,7 @@ type ServeCmd struct {
 	PyPIMetadataTTL     time.Duration `kong:"name='pypi-metadata-ttl',default='5m',env='PYPI_METADATA_TTL',help='TTL for PyPI project metadata cache',group='TTL'"`
 	MavenMetadataTTL    time.Duration `kong:"name='maven-metadata-ttl',default='5m',env='MAVEN_METADATA_TTL',help='TTL for maven-metadata.xml cache',group='TTL'"`
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
+	BuildCacheTTL       time.Duration `kong:"name='buildcache-ttl',default='24h',env='BUILDCACHE_TTL',help='TTL for Go build cache action mappings',group='TTL'"`
 	HTTPCacheTTL        time.Duration `kong:"name='httpcache-ttl',default='24h',env='HTTPCACHE_TTL',help='TTL for sccache/Gradle HTTP build cache entries',group='TTL'"`
 
 	BlobRetention       time.Duration `kong:"name='blob-retention',default='24h',env='BLOB_RETENTION',help='Minimum time to retain blobs after last access before GC may delete them (0 to disable)',group='Cache'"`
@@ -286,6 +287,7 @@ func (cmd *ServeCmd) Run() error {
 		GitUpstreamAuthTrustedSingleTenant: cmd.GitUpstreamAuthTrustedSingleTenant,
 		FetchAllowedHosts:                  cmd.FetchAllowedHosts,
 		FetchMetadataTTL:                   cmd.FetchMetadataTTL,
+		BuildCacheTTL:                      cmd.BuildCacheTTL,
 		HTTPCacheTTL:                       cmd.HTTPCacheTTL,
 		GitMaxRequestBodySize:              cmd.GitMaxRequestBodySize,
 		BlobRetention:                      cmd.BlobRetention,

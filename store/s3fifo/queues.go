@@ -34,11 +34,12 @@ var (
 // Implementations must be safe to call concurrently.
 type Queues interface {
 	PushHead(queue, hash string) (bool, error)
+	PushHeadBatched(queue, hash string) (bool, error)
 	PopTail(queue string) (string, error)
 	Remove(queue, hash string) (bool, error)
 	Len(queue string) (int, error)
 	ForEach(queue string, fn func(hash string) error) error
-	AdmitGhostHit(hash string) error
+	AdmitGhostHit(hash string) (bool, error)
 	GhostContains(hash string) (bool, error)
 	GhostAdd(hash string) error
 	GhostRemove(hash string) error
@@ -80,6 +81,18 @@ func (q *BoltQueues) createBuckets() error {
 func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
 	var replaced bool
 	err := q.db.Update(func(tx *bbolt.Tx) error {
+		var err error
+		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+		return err
+	})
+	return replaced, err
+}
+
+// PushHeadBatched is the admission-path variant of PushHead. Concurrent calls
+// share one bbolt write transaction and therefore one durability sync.
+func (q *BoltQueues) PushHeadBatched(queue, hash string) (bool, error) {
+	var replaced bool
+	err := q.db.Batch(func(tx *bbolt.Tx) error {
 		var err error
 		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
 		return err
@@ -152,17 +165,21 @@ func (q *BoltQueues) ForEach(queue string, fn func(hash string) error) error {
 }
 
 // AdmitGhostHit atomically removes hash from the ghost set and inserts it at
-// the head of the main queue. Called on a ghost cache hit to bypass small queue.
-func (q *BoltQueues) AdmitGhostHit(hash string) error {
-	return q.db.Update(func(tx *bbolt.Tx) error {
+// the head of the main queue. It reports whether the hash was still present;
+// concurrent admissions can observe the same ghost entry before the batch runs.
+func (q *BoltQueues) AdmitGhostHit(hash string) (bool, error) {
+	var admitted bool
+	err := q.db.Batch(func(tx *bbolt.Tx) error {
+		admitted = false
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 
 		seqVal := ghostBucket.Get([]byte(hash))
 		if seqVal == nil {
-			// Not in ghost (possible race on restart); fall through to normal small admission.
+			// Another concurrent admission already consumed the ghost entry.
 			return nil
 		}
+		admitted = true
 		seqKey := make([]byte, len(seqVal))
 		copy(seqKey, seqVal)
 
@@ -176,6 +193,7 @@ func (q *BoltQueues) AdmitGhostHit(hash string) error {
 		_, err := txPushHead(tx, bucketMain, bucketMainByHash, hash)
 		return err
 	})
+	return admitted, err
 }
 
 // GhostContains reports whether hash is currently in the ghost set.

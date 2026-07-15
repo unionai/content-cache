@@ -21,6 +21,8 @@ type BoltDB struct {
 	noSync bool // disables fsync per transaction (for testing only)
 }
 
+const writeBatchDelay = time.Millisecond
+
 // BoltDBOption configures a BoltDB instance.
 type BoltDBOption func(*BoltDB)
 
@@ -69,6 +71,10 @@ func (b *BoltDB) Open(path string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	b.db = db
+	// Cache clients issue many small concurrent writes. A short batch window
+	// lets bbolt commit them with one durability sync without adding the
+	// library default 10ms delay to low-volume requests.
+	b.db.MaxBatchDelay = writeBatchDelay
 
 	if err := b.createBuckets(); err != nil {
 		_ = db.Close()
@@ -305,7 +311,7 @@ func (b *BoltDB) GetBlob(_ context.Context, hash string) (*BlobEntry, error) {
 
 // PutBlob stores blob metadata.
 func (b *BoltDB) PutBlob(_ context.Context, entry *BlobEntry) error {
-	return b.db.Update(func(tx *bbolt.Tx) error {
+	return b.db.Batch(func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return fmt.Errorf("blobs_by_hash bucket not found")
@@ -402,7 +408,7 @@ func (b *BoltDB) DecrementBlobRef(ctx context.Context, hash string) error {
 // Returns (0, ErrNotFound) if the blob hash does not exist in the database.
 func (b *BoltDB) TouchBlob(_ context.Context, hash string) (int, error) {
 	var newCount int
-	err := b.db.Update(func(tx *bbolt.Tx) error {
+	err := b.db.Batch(func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return ErrNotFound
@@ -876,7 +882,7 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 		return fmt.Errorf("marshaling envelope: %w", err)
 	}
 
-	return b.db.Update(func(tx *bbolt.Tx) error {
+	return b.db.Batch(func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
 			return fmt.Errorf("envelopes bucket not found")

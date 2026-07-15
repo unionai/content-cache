@@ -210,7 +210,9 @@ func TestAdmitGhostHit(t *testing.T) {
 	require.NoError(t, q.GhostAdd("gh1"))
 
 	// On re-admission (ghost hit): remove from ghost, add to main.
-	require.NoError(t, q.AdmitGhostHit("gh1"))
+	admitted, err := q.AdmitGhostHit("gh1")
+	require.NoError(t, err)
+	require.True(t, admitted)
 
 	found, err := q.GhostContains("gh1")
 	require.NoError(t, err)
@@ -219,6 +221,10 @@ func TestAdmitGhostHit(t *testing.T) {
 	n, err := q.Len(QueueMain)
 	require.NoError(t, err)
 	require.Equal(t, 1, n)
+
+	admitted, err = q.AdmitGhostHit("gh1")
+	require.NoError(t, err)
+	require.False(t, admitted, "a consumed ghost entry must not be admitted twice")
 }
 
 func TestForEach(t *testing.T) {

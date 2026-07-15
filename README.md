@@ -420,6 +420,7 @@ OCI registry credentials (username/password) are configured via the credentials 
 | `--maven-metadata-ttl` | `MAVEN_METADATA_TTL` | `5m` | TTL for maven-metadata.xml cache |
 | `--rubygems-metadata-ttl` | `RUBYGEMS_METADATA_TTL` | `5m` | TTL for RubyGems metadata cache |
 | `--fetch-metadata-ttl` | `FETCH_METADATA_TTL` | `24h` | TTL for direct download cache metadata under `/fetch` and `/github-release` |
+| `--buildcache-ttl` | `BUILDCACHE_TTL` | `24h` | TTL for Go build cache action mappings |
 
 ### Git Proxy Options
 
