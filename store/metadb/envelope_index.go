@@ -113,7 +113,6 @@ func (idx *EnvelopeIndex) PutWithOptions(ctx context.Context, key string, data [
 	if !opts.LastModified.IsZero() {
 		env.LastModifiedUnixMs = opts.LastModified.UnixMilli()
 	}
-
 	return idx.store.PutEnvelope(ctx, idx.protocol, idx.kind, key, env)
 }
 

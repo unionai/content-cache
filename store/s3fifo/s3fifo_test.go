@@ -2,6 +2,7 @@ package s3fifo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -75,6 +76,22 @@ func mustParseHash(t *testing.T, hash string) contentcache.Hash {
 	ref, err := contentcache.ParseBlobRef(hash)
 	require.NoError(t, err)
 	return ref.Hash
+}
+
+type observingDeleteBackend struct {
+	backend.Backend
+	onDelete  func()
+	deleteErr error
+}
+
+func (b *observingDeleteBackend) Delete(ctx context.Context, key string) error {
+	if b.onDelete != nil {
+		b.onDelete()
+	}
+	if b.deleteErr != nil {
+		return b.deleteErr
+	}
+	return b.Backend.Delete(ctx, key)
 }
 
 func TestAdmitNewBlobGoesToSmall(t *testing.T) {
@@ -171,6 +188,60 @@ func TestEvictOneHitWonder(t *testing.T) {
 	mgr.mu.Lock()
 	require.Equal(t, int64(0), mgr.smallBytes)
 	mgr.mu.Unlock()
+}
+
+func TestEvictionDeletesOutsideManagerLock(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+
+	evictedHash := putBlob(t, ctx, mdb, b, "0123456789")
+	deleteCalled := false
+	managerUnlocked := false
+	queueUnlocked := false
+	mgr.backend = &observingDeleteBackend{
+		Backend: b,
+		onDelete: func() {
+			deleteCalled = true
+			managerUnlocked = mgr.mu.TryLock()
+			if managerUnlocked {
+				mgr.mu.Unlock()
+			}
+			queueUnlocked = mgr.queueMu.TryLock()
+			if queueUnlocked {
+				mgr.queueMu.Unlock()
+			}
+		},
+	}
+
+	mgr.Admit(ctx, evictedHash, 10)
+	mgr.maybeEvict(ctx)
+
+	require.True(t, deleteCalled)
+	require.True(t, managerUnlocked, "backend deletion must run outside the manager lock")
+	require.True(t, queueUnlocked, "backend deletion must run outside the queue lock")
+}
+
+func TestEvictionDeleteFailureRestoresQueueState(t *testing.T) {
+	ctx := context.Background()
+	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
+
+	hash := putBlob(t, ctx, mdb, b, "0123456789")
+	mgr.backend = &observingDeleteBackend{Backend: b, deleteErr: errors.New("delete failed")}
+
+	mgr.Admit(ctx, hash, 10)
+	mgr.maybeEvict(ctx)
+
+	n, err := mgr.queues.Len(QueueSmall)
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	state := mgr.snapshotState()
+	require.Equal(t, int64(10), state.smallBytes)
+	require.Equal(t, 1, state.smallLen)
+
+	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
+	require.NoError(t, err)
+	require.True(t, exists)
 }
 
 func TestEvictPromotionToMain(t *testing.T) {
@@ -419,6 +490,33 @@ func TestRecomputeBytes(t *testing.T) {
 	defer mgr.mu.Unlock()
 	require.Equal(t, int64(10), mgr.smallBytes)
 	require.Equal(t, int64(0), mgr.mainBytes)
+}
+
+func TestNewManagerSignalsEvictionForPersistedOverlimitState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	mdb := metadb.NewBoltDB(metadb.WithNoSync(true))
+	require.NoError(t, mdb.Open(dir+"/meta.db"))
+	t.Cleanup(func() { require.NoError(t, mdb.Close()) })
+
+	fsBackend, err := backend.NewFilesystem(dir + "/blobs")
+	require.NoError(t, err)
+	hash := putBlob(t, ctx, mdb, fsBackend, "0123456789")
+
+	queues, err := NewBoltQueues(mdb.DB())
+	require.NoError(t, err)
+	_, err = queues.PushHead(QueueSmall, hash)
+	require.NoError(t, err)
+
+	mgr, err := NewManager(queues, mdb, fsBackend, Config{MaxSize: 5})
+	require.NoError(t, err)
+
+	select {
+	case <-mgr.evictCh:
+	default:
+		require.Fail(t, "persisted over-limit state must schedule eviction at startup")
+	}
 }
 
 func TestOrphanedQueueEntryCleanup(t *testing.T) {

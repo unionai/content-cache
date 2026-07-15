@@ -148,7 +148,7 @@ type Config struct {
 	UpstreamSumDB string
 
 	// BlobRetention is the minimum time a blob is kept after its last access
-	// before GC may delete it, even when its RefCount drops to zero.
+	// before GC may delete it after its metadata references drop to zero.
 	// Zero disables the retention floor.
 	BlobRetention time.Duration
 
@@ -163,6 +163,11 @@ type Config struct {
 
 	// GCInterval is how often to run garbage collection.
 	GCInterval time.Duration
+
+	// S3FIFOCheckInterval is how often to run the size-eviction safety check.
+	// Admission and startup signals normally trigger eviction sooner.
+	// Default is 30 seconds.
+	S3FIFOCheckInterval time.Duration
 
 	// GCStartupDelay is the delay before first GC run.
 	GCStartupDelay time.Duration
@@ -183,6 +188,14 @@ type Config struct {
 	// MetadataDSN is the file path for the metadata database.
 	// Defaults to <StoragePath>/metadata.db.
 	MetadataDSN string
+
+	// MetadataBatchSize is the maximum number of callbacks in one bbolt batch.
+	// Default: 100.
+	MetadataBatchSize int
+
+	// MetadataBatchDelay is the maximum time bbolt waits before starting a batch.
+	// Default: 10ms.
+	MetadataBatchDelay time.Duration
 
 	// Logger for the server
 	Logger *slog.Logger
@@ -231,7 +244,14 @@ func openMetaBackend(cfg Config) (metadb.MetaDB, func() (s3fifo.Queues, error), 
 	if dsn == "" {
 		dsn = path.Join(cfg.StoragePath, "metadata.db")
 	}
-	boltDB := metadb.NewBoltDB()
+	boltOpts := make([]metadb.BoltDBOption, 0, 2)
+	if cfg.MetadataBatchSize > 0 {
+		boltOpts = append(boltOpts, metadb.WithBatchSize(cfg.MetadataBatchSize))
+	}
+	if cfg.MetadataBatchDelay > 0 {
+		boltOpts = append(boltOpts, metadb.WithBatchDelay(cfg.MetadataBatchDelay))
+	}
+	boltDB := metadb.NewBoltDB(boltOpts...)
 	if err := boltDB.Open(dsn); err != nil {
 		return nil, nil, fmt.Errorf("opening bolt metadata database: %w", err)
 	}
@@ -326,14 +346,7 @@ func New(cfg Config) (*Server, error) {
 		if qErr != nil {
 			return nil, fmt.Errorf("creating s3fifo queues: %w", qErr)
 		}
-		s3fifoCfg := s3fifo.Config{
-			MaxSize: cfg.CacheMaxSize,
-			// CheckInterval is a safety-net ticker; real eviction is signal-driven
-			// via Admit. Align the tick with the GC cycle so background maintenance
-			// runs at a consistent cadence.
-			CheckInterval: cfg.GCInterval,
-			Logger:        cfg.Logger.With("component", "s3fifo"),
-		}
+		s3fifoCfg := makeS3FIFOConfig(cfg)
 		var s3err error
 		s3fifoMgr, s3err = s3fifo.NewManager(queues, metaDB, instrumentedBackend, s3fifoCfg)
 		if s3err != nil {
@@ -855,6 +868,14 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	return s, nil
+}
+
+func makeS3FIFOConfig(cfg Config) s3fifo.Config {
+	return s3fifo.Config{
+		MaxSize:       cfg.CacheMaxSize,
+		CheckInterval: cfg.S3FIFOCheckInterval,
+		Logger:        cfg.Logger.With("component", "s3fifo"),
+	}
 }
 
 // selectAuthMiddleware returns the appropriate auth middleware based on config.

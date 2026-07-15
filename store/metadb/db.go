@@ -23,7 +23,7 @@ type EnvelopeStore interface {
 // EnvelopeExpiryStore handles expiry queries for the EnvelopeReaper.
 type EnvelopeExpiryStore interface {
 	GetExpiredEnvelopes(ctx context.Context, before time.Time, limit int) ([]EnvelopeExpiryEntry, error)
-	DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeExpiryEntry) error
+	DeleteExpiredEnvelope(ctx context.Context, entry EnvelopeExpiryEntry) (bool, error)
 }
 
 // MetaExpiryStore is the narrow interface used by ExpiryReaper for legacy metadata cleanup.
@@ -63,8 +63,8 @@ type MetaDB interface {
 
 	// Eviction queries
 	GetExpiredMeta(ctx context.Context, before time.Time, limit int) ([]ExpiryEntry, error)
-	// GetUnreferencedBlobs returns blobs with RefCount == 0 whose last access
-	// time is before the given cutoff. Pass a zero time to skip the cutoff filter.
+	// GetUnreferencedBlobs returns blobs without metadata references whose last
+	// access is before the cutoff. A zero time skips the cutoff.
 	GetUnreferencedBlobs(ctx context.Context, before time.Time, limit int) ([]string, error)
 }
 

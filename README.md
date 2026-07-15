@@ -36,11 +36,11 @@ Size eviction activates automatically when `--cache-max-size` is set. The GC con
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cache-max-size` | `10737418240` (10 GB) | Total byte limit for cached blobs. Set to `0` to disable size eviction. |
-| `--gc-interval` | `1h` | How often the background eviction safety-net tick fires. Real eviction is signal-driven and happens inline after each cache write. |
+| `--s3fifo-check-interval` | `30s` | How often the background eviction safety-net tick fires. Real eviction is signal-driven after each cache write and at startup when reconstructed state is over limit. |
 
 ### Startup behaviour
 
-Queue state is persisted in bbolt, so eviction is warm across restarts — the manager recomputes byte totals from the persisted queue on startup and resumes where it left off. Blobs that were written before S3-FIFO was first enabled (e.g. files left on disk from a previous deployment) will not appear in any queue and will not be subject to size eviction until they are naturally expired by TTL or cleaned up by GC.
+Queue state is persisted in bbolt, so eviction is warm across restarts — the manager recomputes byte totals from the persisted queue on startup, immediately schedules cleanup when over limit, and resumes where it left off. Blobs that were written before S3-FIFO was first enabled (e.g. files left on disk from a previous deployment) will not appear in any queue and will not be subject to size eviction until they are naturally expired by TTL or cleaned up by GC.
 
 ## Quick Start
 
@@ -420,6 +420,7 @@ OCI registry credentials (username/password) are configured via the credentials 
 | `--maven-metadata-ttl` | `MAVEN_METADATA_TTL` | `5m` | TTL for maven-metadata.xml cache |
 | `--rubygems-metadata-ttl` | `RUBYGEMS_METADATA_TTL` | `5m` | TTL for RubyGems metadata cache |
 | `--fetch-metadata-ttl` | `FETCH_METADATA_TTL` | `24h` | TTL for direct download cache metadata under `/fetch` and `/github-release` |
+| `--buildcache-ttl` | `BUILDCACHE_TTL` | `24h` | TTL for Go build cache action mappings |
 
 ### Git Proxy Options
 
@@ -445,7 +446,15 @@ Point clients at `http://host/httpcache/`.
 | `--cache-max-size` | `CACHE_MAX_SIZE` | `10737418240` | Maximum cache size in bytes (10GB, 0 to disable) |
 | `--expiry-check-interval` | `EXPIRY_CHECK_INTERVAL` | `1h` | How often to check for expired content |
 | `--gc-interval` | `GC_INTERVAL` | `1h` | How often to run garbage collection |
+| `--s3fifo-check-interval` | `S3FIFO_CHECK_INTERVAL` | `30s` | How often to run the S3-FIFO size-eviction safety check |
 | `--gc-startup-delay` | `GC_STARTUP_DELAY` | `5m` | Delay before first GC run after startup |
+
+### Metadata Storage
+
+| Flag | Environment Variable | Default | Description |
+|------|---------------------|---------|-------------|
+| `--metadata-batch-size` | `METADATA_BATCH_SIZE` | `100` | Maximum callbacks combined in one bbolt write transaction |
+| `--metadata-batch-delay` | `METADATA_BATCH_DELAY` | `10ms` | Maximum time to wait for a bbolt write batch to fill |
 
 ### Logging Options
 
@@ -765,6 +774,10 @@ content-cache exports OpenTelemetry metrics for monitoring cache effectiveness.
 | `content_cache_http_requests_total` | Counter | Total requests by protocol, endpoint, cache_result, status |
 | `content_cache_http_response_bytes_total` | Counter | Bytes served by protocol, endpoint, cache_result, status |
 | `content_cache_http_request_duration_seconds` | Histogram | Request latency by protocol, endpoint, cache_result, status |
+| `content_cache_metadb_batch_duration_seconds` | Histogram | bbolt batch latency by operation, outcome, and total/callback phase |
+| `content_cache_metadb_last_write_transaction_id` | Gauge | Last observed committed bbolt write transaction ID |
+| `content_cache_metadb_write_calls` | Gauge | Cumulative bbolt file write calls |
+| `content_cache_metadb_write_time_seconds` | Gauge | Cumulative time bbolt spent writing to disk |
 
 ### Labels
 

@@ -3,11 +3,13 @@ package buildcache
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,43 @@ import (
 	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
 )
+
+type readTrackingBody struct {
+	reader io.Reader
+	reads  int
+}
+
+type blockingBody struct {
+	reader  io.Reader
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingBody(body string) *blockingBody {
+	return &blockingBody{
+		reader:  strings.NewReader(body),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.reader.Read(p)
+}
+
+type errorBody struct{ err error }
+
+func (b errorBody) Read([]byte) (int, error) { return 0, b.err }
+
+func (b *readTrackingBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
+}
+
+func (b *readTrackingBody) readCount() int { return b.reads }
 
 func newTestHandler(t *testing.T) (*Handler, *Index, store.Store) {
 	t.Helper()
@@ -74,6 +113,109 @@ func TestHandlerPutThenGet(t *testing.T) {
 	body, _ := io.ReadAll(getRec.Body)
 	require.Equal(t, blobContent, string(body))
 	require.Equal(t, "17", getRec.Header().Get("Content-Length"))
+}
+
+func TestHandlerInFlightFollowerReturnsNoContentWithoutReadingBody(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	actionID := "ca" + strings.Repeat("00", 31)
+	outputID := "cb" + strings.Repeat("00", 31)
+	leaderBody := newBlockingBody("artifact")
+
+	leaderDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, leaderBody)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		leaderDone <- rec
+	}()
+	<-leaderBody.started
+
+	followerBody := &readTrackingBody{reader: strings.NewReader("artifact")}
+	followerReq := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, followerBody)
+	followerRec := httptest.NewRecorder()
+	handler.ServeHTTP(followerRec, followerReq)
+
+	close(leaderBody.release)
+	leaderRec := <-leaderDone
+
+	require.Equal(t, http.StatusNoContent, followerRec.Code)
+	require.Zero(t, followerBody.readCount())
+	require.Equal(t, http.StatusNoContent, leaderRec.Code)
+}
+
+func TestHandlerAlreadyLoadedPutDoesNotReadBody(t *testing.T) {
+	handler, _, _ := newTestHandler(t)
+	actionID := "da" + strings.Repeat("00", 31)
+	outputID := "db" + strings.Repeat("00", 31)
+
+	firstRec := httptest.NewRecorder()
+	handler.ServeHTTP(firstRec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		strings.NewReader("artifact"),
+	))
+	require.Equal(t, http.StatusNoContent, firstRec.Code)
+
+	body := &readTrackingBody{reader: strings.NewReader("artifact")}
+	loadedRec := httptest.NewRecorder()
+	handler.ServeHTTP(loadedRec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		body,
+	))
+
+	require.Equal(t, http.StatusNoContent, loadedRec.Code)
+	require.Zero(t, body.readCount())
+}
+
+func TestHandlerStaleMappingDoesNotUseLoadedFastPath(t *testing.T) {
+	handler, idx, _ := newTestHandler(t)
+	actionID := "ea" + strings.Repeat("00", 31)
+	outputID := "eb" + strings.Repeat("00", 31)
+	require.NoError(t, idx.Put(t.Context(), actionID, &ActionEntry{
+		OutputID: outputID,
+		BlobHash: "blake3:" + strings.Repeat("cc", 32),
+		Size:     8,
+	}))
+
+	body := &readTrackingBody{reader: strings.NewReader("artifact")}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		body,
+	))
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.NotZero(t, body.readCount())
+	getRec := httptest.NewRecorder()
+	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
+	require.Equal(t, http.StatusOK, getRec.Code)
+}
+
+func TestHandlerLeaderFailureAllowsRetry(t *testing.T) {
+	handler, idx, _ := newTestHandler(t)
+	actionID := "ac" + strings.Repeat("00", 31)
+	outputID := "ad" + strings.Repeat("00", 31)
+
+	failedRec := httptest.NewRecorder()
+	handler.ServeHTTP(failedRec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		errorBody{err: errors.New("injected read failure")},
+	))
+	_, indexErr := idx.Get(t.Context(), actionID)
+
+	retryRec := httptest.NewRecorder()
+	handler.ServeHTTP(retryRec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		strings.NewReader("artifact"),
+	))
+
+	require.Equal(t, http.StatusInternalServerError, failedRec.Code)
+	require.ErrorIs(t, indexErr, ErrNotFound)
+	require.Equal(t, http.StatusNoContent, retryRec.Code)
 }
 
 func TestHandlerMissingActionID(t *testing.T) {

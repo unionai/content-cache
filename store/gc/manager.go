@@ -20,7 +20,7 @@ type Config struct {
 	CompactThreshold float64       // Compact if free pages > threshold (default: 0.3)
 
 	// BlobRetentionTTL is the minimum time a blob is kept after its last
-	// access before GC may delete it, even when RefCount == 0.
+	// access before GC may delete it, even when it has no metadata references.
 	// Zero disables the floor and unreferenced blobs are deleted immediately.
 	BlobRetentionTTL time.Duration
 }
@@ -200,7 +200,7 @@ func (m *Manager) runGC(ctx context.Context) *Result {
 	// Phase 1: Delete expired metadata
 	m.phaseExpireMeta(ctx, result)
 
-	// Phase 2: Delete unreferenced blobs (RefCount == 0)
+	// Phase 2: Delete blobs without live metadata references.
 	m.phaseDeleteUnreferenced(ctx, result)
 
 	// Phase 3: Delete orphan blobs (on disk but not in index)

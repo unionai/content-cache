@@ -29,13 +29,17 @@ func (m *Manager) phaseExpireMeta(ctx context.Context, result *Result) {
 		default:
 		}
 
-		if err := m.db.DeleteMetaWithRefs(ctx, entry.Protocol, entry.Key); err != nil {
+		deleted, err := m.db.DeleteExpiredMetaWithRefs(ctx, entry)
+		if err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("delete meta %s/%s: %v", entry.Protocol, entry.Key, err))
 			m.logger.Error("failed to delete expired metadata",
 				"protocol", entry.Protocol,
 				"key", entry.Key,
 				"error", err,
 			)
+			continue
+		}
+		if !deleted {
 			continue
 		}
 
@@ -50,8 +54,8 @@ func (m *Manager) phaseExpireMeta(ctx context.Context, result *Result) {
 	}
 }
 
-// phaseDeleteUnreferenced deletes blobs with RefCount == 0 that have not been
-// accessed within the configured retention window.
+// phaseDeleteUnreferenced deletes blobs without metadata references that have
+// not been accessed within the retention window.
 func (m *Manager) phaseDeleteUnreferenced(ctx context.Context, result *Result) {
 	m.logger.Debug("phase: delete unreferenced blobs")
 

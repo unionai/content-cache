@@ -66,15 +66,19 @@ type ServeCmd struct {
 	PyPIMetadataTTL     time.Duration `kong:"name='pypi-metadata-ttl',default='5m',env='PYPI_METADATA_TTL',help='TTL for PyPI project metadata cache',group='TTL'"`
 	MavenMetadataTTL    time.Duration `kong:"name='maven-metadata-ttl',default='5m',env='MAVEN_METADATA_TTL',help='TTL for maven-metadata.xml cache',group='TTL'"`
 	RubyGemsMetadataTTL time.Duration `kong:"name='rubygems-metadata-ttl',default='5m',env='RUBYGEMS_METADATA_TTL',help='TTL for RubyGems metadata cache',group='TTL'"`
+	BuildCacheTTL       time.Duration `kong:"name='buildcache-ttl',default='24h',env='BUILDCACHE_TTL',help='TTL for Go build cache action mappings',group='TTL'"`
 	HTTPCacheTTL        time.Duration `kong:"name='httpcache-ttl',default='24h',env='HTTPCACHE_TTL',help='TTL for sccache/Gradle HTTP build cache entries',group='TTL'"`
 
 	BlobRetention       time.Duration `kong:"name='blob-retention',default='24h',env='BLOB_RETENTION',help='Minimum time to retain blobs after last access before GC may delete them (0 to disable)',group='Cache'"`
 	CacheMaxSize        int64         `kong:"name='cache-max-size',default='10737418240',env='CACHE_MAX_SIZE',help='Maximum cache size in bytes (default: 10GB, 0 to disable)',group='Cache'"`
 	ExpiryCheckInterval time.Duration `kong:"name='expiry-check-interval',default='1h',env='EXPIRY_CHECK_INTERVAL',help='How often to check for expired content',group='Cache'"`
 	GCInterval          time.Duration `kong:"name='gc-interval',default='1h',env='GC_INTERVAL',help='How often to run garbage collection',group='Cache'"`
+	S3FIFOCheckInterval time.Duration `kong:"name='s3fifo-check-interval',default='30s',env='S3FIFO_CHECK_INTERVAL',help='How often to run the S3-FIFO size-eviction safety check',group='Cache'"`
 	GCStartupDelay      time.Duration `kong:"name='gc-startup-delay',default='5m',env='GC_STARTUP_DELAY',help='Delay before first GC run after startup',group='Cache'"`
 
-	MetadataDSN string `kong:"name='metadata-dsn',env='METADATA_DSN',help='Metadata database path (default: <storage>/metadata.db)',group='Storage'"`
+	MetadataDSN        string        `kong:"name='metadata-dsn',env='METADATA_DSN',help='Metadata database path (default: <storage>/metadata.db)',group='Storage'"`
+	MetadataBatchSize  int           `kong:"name='metadata-batch-size',default='100',env='METADATA_BATCH_SIZE',help='Maximum callbacks combined in one bbolt write transaction',group='Storage'"`
+	MetadataBatchDelay time.Duration `kong:"name='metadata-batch-delay',default='10ms',env='METADATA_BATCH_DELAY',help='Maximum time to wait for a bbolt write batch to fill',group='Storage'"`
 
 	LogLevel  string `kong:"name='log-level',default='info',env='LOG_LEVEL',enum='debug,info,warn,error',help='Log level',group='Logging'"`
 	LogFormat string `kong:"name='log-format',default='text',env='LOG_FORMAT',enum='text,json',help='Log format',group='Logging'"`
@@ -286,14 +290,18 @@ func (cmd *ServeCmd) Run() error {
 		GitUpstreamAuthTrustedSingleTenant: cmd.GitUpstreamAuthTrustedSingleTenant,
 		FetchAllowedHosts:                  cmd.FetchAllowedHosts,
 		FetchMetadataTTL:                   cmd.FetchMetadataTTL,
+		BuildCacheTTL:                      cmd.BuildCacheTTL,
 		HTTPCacheTTL:                       cmd.HTTPCacheTTL,
 		GitMaxRequestBodySize:              cmd.GitMaxRequestBodySize,
 		BlobRetention:                      cmd.BlobRetention,
 		CacheMaxSize:                       cmd.CacheMaxSize,
 		ExpiryCheckInterval:                cmd.ExpiryCheckInterval,
 		GCInterval:                         cmd.GCInterval,
+		S3FIFOCheckInterval:                cmd.S3FIFOCheckInterval,
 		GCStartupDelay:                     cmd.GCStartupDelay,
 		MetadataDSN:                        cmd.MetadataDSN,
+		MetadataBatchSize:                  cmd.MetadataBatchSize,
+		MetadataBatchDelay:                 cmd.MetadataBatchDelay,
 		Logger:                             logger,
 	}
 
