@@ -57,19 +57,31 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	spoolBytesSavedTotal, err := meter.Int64Counter("content_cache_spool_bytes_saved_total")
 	require.NoError(t, err)
 
+	buildCacheUploadsTotal, err := meter.Int64Counter("content_cache_buildcache_uploads_total")
+	require.NoError(t, err)
+
+	buildCacheUploadBodiesAvoidedTotal, err := meter.Int64Counter("content_cache_buildcache_upload_bodies_avoided_total")
+	require.NoError(t, err)
+
+	buildCacheUploadsInflight, err := meter.Int64Gauge("content_cache_buildcache_uploads_inflight")
+	require.NoError(t, err)
+
 	globalMetrics = &Metrics{
-		requestsTotal:                   requestsTotal,
-		responseBytesTotal:              responseBytesTotal,
-		requestDuration:                 requestDuration,
-		requestsByEndpointTotal:         requestsByEndpointTotal,
-		authRequestsTotal:               authRequestsTotal,
-		spoolRequestsTotal:              spoolRequestsTotal,
-		spoolWaitDuration:               spoolWaitDuration,
-		spoolBytesSavedTotal:            spoolBytesSavedTotal,
-		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
-		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
-		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
-		meterProvider:                   mp,
+		requestsTotal:                      requestsTotal,
+		responseBytesTotal:                 responseBytesTotal,
+		requestDuration:                    requestDuration,
+		requestsByEndpointTotal:            requestsByEndpointTotal,
+		authRequestsTotal:                  authRequestsTotal,
+		spoolRequestsTotal:                 spoolRequestsTotal,
+		spoolWaitDuration:                  spoolWaitDuration,
+		spoolBytesSavedTotal:               spoolBytesSavedTotal,
+		buildCacheUploadsTotal:             buildCacheUploadsTotal,
+		buildCacheUploadBodiesAvoidedTotal: buildCacheUploadBodiesAvoidedTotal,
+		buildCacheUploadsInflight:          buildCacheUploadsInflight,
+		s3fifoEvictionErrorsTotal:          s3fifoEvictionErrorsTotal,
+		s3fifoEvictionBlockedTotal:         s3fifoEvictionBlockedTotal,
+		s3fifoOrphanedQueueEntriesTotal:    s3fifoOrphanedQueueEntriesTotal,
+		meterProvider:                      mp,
 	}
 
 	t.Cleanup(func() {
@@ -78,6 +90,46 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	})
 
 	return reader
+}
+
+func TestRecordBuildCacheUploadMetrics(t *testing.T) {
+	reader := setupTestMetrics(t)
+	ctx := context.Background()
+
+	for _, event := range []string{
+		BuildCacheUploadLeader,
+		BuildCacheUploadInflightFollower,
+		BuildCacheUploadAlreadyLoaded,
+		BuildCacheUploadLeaderSuccess,
+		BuildCacheUploadLeaderFailure,
+	} {
+		RecordBuildCacheUpload(ctx, event)
+	}
+	RecordBuildCacheUploadBodyAvoided(ctx, "inflight")
+	RecordBuildCacheUploadBodyAvoided(ctx, "already_loaded")
+	UpdateBuildCacheUploadsInflight(ctx, 3)
+
+	rm := collectMetrics(t, reader)
+	uploads := findCounter(rm, "content_cache_buildcache_uploads_total")
+	require.Len(t, uploads, 5)
+	for _, event := range []string{
+		BuildCacheUploadLeader,
+		BuildCacheUploadInflightFollower,
+		BuildCacheUploadAlreadyLoaded,
+		BuildCacheUploadLeaderSuccess,
+		BuildCacheUploadLeaderFailure,
+	} {
+		require.True(t, anyPointHasAttr(uploads, "event", event), event)
+	}
+
+	avoided := findCounter(rm, "content_cache_buildcache_upload_bodies_avoided_total")
+	require.Len(t, avoided, 2)
+	require.True(t, anyPointHasAttr(avoided, "reason", "inflight"))
+	require.True(t, anyPointHasAttr(avoided, "reason", "already_loaded"))
+
+	inflight := findGauge(rm, "content_cache_buildcache_uploads_inflight")
+	require.Len(t, inflight, 1)
+	require.EqualValues(t, 3, inflight[0].Value)
 }
 
 func TestRecordSpoolRequest(t *testing.T) {
@@ -139,6 +191,28 @@ func findHistogram(rm metricdata.ResourceMetrics, name string) []metricdata.Hist
 		}
 	}
 	return nil
+}
+
+func findGauge(rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == name {
+				if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
+					return gauge.DataPoints
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func anyPointHasAttr(points []metricdata.DataPoint[int64], key, value string) bool {
+	for _, point := range points {
+		if hasAttr(point.Attributes, key, value) {
+			return true
+		}
+	}
+	return false
 }
 
 // hasAttr checks if a data point's attribute set contains the given key-value pair.

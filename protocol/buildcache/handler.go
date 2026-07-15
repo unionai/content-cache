@@ -1,6 +1,7 @@
 package buildcache
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -8,20 +9,24 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	contentcache "github.com/buildkite/content-cache"
 	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/telemetry"
 )
 
+const uploadRegistrationTTL = 10 * time.Minute
+
 // Handler implements the build cache HTTP API.
 //
 // GET /buildcache/{actionID}              → streams blob body with X-Output-ID + Content-Length headers
 // PUT /buildcache/{actionID}?output_id=  → stores blob, returns 204
 type Handler struct {
-	index  *Index
-	store  store.Store
-	logger *slog.Logger
+	index   *Index
+	store   store.Store
+	logger  *slog.Logger
+	uploads *uploadRegistry
 }
 
 // HandlerOption configures a Handler.
@@ -38,10 +43,14 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 		index:  index,
 		store:  store,
 		logger: slog.Default(),
+		uploads: newUploadRegistry(uploadRegistrationTTL, nil, func(size int) {
+			telemetry.UpdateBuildCacheUploadsInflight(context.Background(), size)
+		}),
 	}
 	for _, opt := range opts {
 		opt(h)
 	}
+	telemetry.UpdateBuildCacheUploadsInflight(context.Background(), 0)
 	return h
 }
 
@@ -78,6 +87,11 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 	telemetry.SetEndpoint(r, "get")
 	ctx := r.Context()
 	logger := h.logger.With("action_id", actionID)
+	if h.uploads.isLoading(actionID) {
+		telemetry.SetCacheResult(r, telemetry.CacheMiss)
+		http.NotFound(w, r)
+		return
+	}
 
 	entry, err := h.index.Get(ctx, actionID)
 	if err != nil {
@@ -88,6 +102,11 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 		}
 		logger.Error("index get failed", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if h.uploads.isLoading(actionID) {
+		telemetry.SetCacheResult(r, telemetry.CacheMiss)
+		http.NotFound(w, r)
 		return
 	}
 
@@ -106,6 +125,11 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 		return
 	}
 	defer func() { _ = rc.Close() }()
+	if h.uploads.isLoading(actionID) {
+		telemetry.SetCacheResult(r, telemetry.CacheMiss)
+		http.NotFound(w, r)
+		return
+	}
 
 	telemetry.SetCacheResult(r, telemetry.CacheHit)
 	w.Header().Set("Content-Type", "application/octet-stream")
@@ -127,10 +151,59 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 		return
 	}
 
+	entry, err := h.index.Get(ctx, actionID)
+	switch {
+	case err == nil && entry.OutputID == outputID:
+		ref, parseErr := contentcache.ParseBlobRef(entry.BlobHash)
+		if parseErr == nil {
+			exists, hasErr := h.store.Has(ctx, ref.Hash)
+			if hasErr != nil {
+				logger.Error("failed to check existing blob", "blob_hash", entry.BlobHash, "error", hasErr)
+				http.Error(w, "storage error", http.StatusInternalServerError)
+				return
+			}
+			if exists {
+				telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadAlreadyLoaded)
+				telemetry.RecordBuildCacheUploadBodyAvoided(ctx, "already_loaded")
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+		}
+	case err != nil && !errors.Is(err, ErrNotFound):
+		logger.Error("index get failed", "error", err)
+		http.Error(w, "index error", http.StatusInternalServerError)
+		return
+	}
+
+	lease, leader := h.uploads.acquire(actionID, outputID)
+	if !leader {
+		telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadInflightFollower)
+		telemetry.RecordBuildCacheUploadBodyAvoided(ctx, "inflight")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadLeader)
+	leaderSucceeded := false
+	defer func() {
+		event := telemetry.BuildCacheUploadLeaderFailure
+		if leaderSucceeded {
+			event = telemetry.BuildCacheUploadLeaderSuccess
+		}
+		telemetry.RecordBuildCacheUpload(context.Background(), event)
+	}()
+	defer lease.release()
+	stopCancellationCleanup := context.AfterFunc(ctx, lease.release)
+	defer stopCancellationCleanup()
+
 	hash, err := h.store.Put(ctx, r.Body)
 	if err != nil {
 		logger.Error("failed to store blob", "error", err)
 		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if err := ctx.Err(); err != nil {
+		logger.Warn("upload cancelled before indexing", "error", err)
+		http.Error(w, "upload cancelled", http.StatusInternalServerError)
 		return
 	}
 
@@ -140,18 +213,24 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	if err := ctx.Err(); err != nil {
+		logger.Warn("upload cancelled before indexing", "error", err)
+		http.Error(w, "upload cancelled", http.StatusInternalServerError)
+		return
+	}
 
-	entry := &ActionEntry{
+	uploadedEntry := &ActionEntry{
 		OutputID: outputID,
 		BlobHash: contentcache.NewBlobRef(hash).String(),
 		Size:     size,
 	}
-	if err := h.index.Put(ctx, actionID, entry); err != nil {
+	if err := h.index.Put(ctx, actionID, uploadedEntry); err != nil {
 		logger.Error("failed to store index entry", "error", err)
 		http.Error(w, "index error", http.StatusInternalServerError)
 		return
 	}
 
 	logger.Debug("stored build artifact", "output_id", outputID, "size", size)
+	leaderSucceeded = true
 	w.WriteHeader(http.StatusNoContent)
 }

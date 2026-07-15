@@ -25,6 +25,12 @@ import (
 
 const (
 	meterName = "github.com/buildkite/content-cache"
+
+	BuildCacheUploadLeader           = "leader"
+	BuildCacheUploadInflightFollower = "inflight_follower"
+	BuildCacheUploadAlreadyLoaded    = "already_loaded"
+	BuildCacheUploadLeaderSuccess    = "leader_success"
+	BuildCacheUploadLeaderFailure    = "leader_failure"
 )
 
 // MetricsConfig configures the metrics system. OTLP transport is driven by
@@ -53,9 +59,14 @@ type Metrics struct {
 	spoolRequestsTotal      metric.Int64Counter
 	spoolWaitDuration       metric.Float64Histogram
 	spoolBytesSavedTotal    metric.Int64Counter
-	backendRequestDuration  metric.Float64Histogram
-	backendRequestsTotal    metric.Int64Counter
-	backendBytesTotal       metric.Int64Counter
+
+	buildCacheUploadsTotal             metric.Int64Counter
+	buildCacheUploadBodiesAvoidedTotal metric.Int64Counter
+	buildCacheUploadsInflight          metric.Int64Gauge
+
+	backendRequestDuration metric.Float64Histogram
+	backendRequestsTotal   metric.Int64Counter
+	backendBytesTotal      metric.Int64Counter
 
 	// Auth metrics
 	authRequestsTotal metric.Int64Counter
@@ -262,6 +273,33 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		"content_cache_spool_bytes_saved_total",
 		metric.WithDescription("Estimated upstream payload bytes avoided by successful coalesced requests"),
 		metric.WithUnit("By"),
+	)
+	if err != nil {
+		return err
+	}
+
+	buildCacheUploadsTotal, err := meter.Int64Counter(
+		"content_cache_buildcache_uploads_total",
+		metric.WithDescription("Build cache upload state transitions by event"),
+		metric.WithUnit("{request}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	buildCacheUploadBodiesAvoidedTotal, err := meter.Int64Counter(
+		"content_cache_buildcache_upload_bodies_avoided_total",
+		metric.WithDescription("Build cache upload bodies avoided by early acknowledgement"),
+		metric.WithUnit("{body}"),
+	)
+	if err != nil {
+		return err
+	}
+
+	buildCacheUploadsInflight, err := meter.Int64Gauge(
+		"content_cache_buildcache_uploads_inflight",
+		metric.WithDescription("Current build cache leader uploads registered in memory"),
+		metric.WithUnit("{upload}"),
 	)
 	if err != nil {
 		return err
@@ -523,25 +561,31 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 	}
 
 	globalMetrics = &Metrics{
-		authRequestsTotal:               authRequestsTotal,
-		reaperDeletedTotal:              reaperDeletedTotal,
-		reaperDuration:                  reaperDuration,
-		requestsTotal:                   requestsTotal,
-		responseBytesTotal:              responseBytesTotal,
-		requestDuration:                 requestDuration,
-		requestsByEndpointTotal:         requestsByEndpointTotal,
-		blobWriteSize:                   blobWriteSize,
-		upstreamFetchDuration:           upstreamFetchDuration,
-		upstreamFetchTotal:              upstreamFetchTotal,
-		upstreamFetchBytesTotal:         upstreamFetchBytesTotal,
-		blobTouchesTotal:                blobTouchesTotal,
-		blobTouchMissesTotal:            blobTouchMissesTotal,
-		spoolRequestsTotal:              spoolRequestsTotal,
-		spoolWaitDuration:               spoolWaitDuration,
-		spoolBytesSavedTotal:            spoolBytesSavedTotal,
-		backendRequestDuration:          backendRequestDuration,
-		backendRequestsTotal:            backendRequestsTotal,
-		backendBytesTotal:               backendBytesTotal,
+		authRequestsTotal:       authRequestsTotal,
+		reaperDeletedTotal:      reaperDeletedTotal,
+		reaperDuration:          reaperDuration,
+		requestsTotal:           requestsTotal,
+		responseBytesTotal:      responseBytesTotal,
+		requestDuration:         requestDuration,
+		requestsByEndpointTotal: requestsByEndpointTotal,
+		blobWriteSize:           blobWriteSize,
+		upstreamFetchDuration:   upstreamFetchDuration,
+		upstreamFetchTotal:      upstreamFetchTotal,
+		upstreamFetchBytesTotal: upstreamFetchBytesTotal,
+		blobTouchesTotal:        blobTouchesTotal,
+		blobTouchMissesTotal:    blobTouchMissesTotal,
+		spoolRequestsTotal:      spoolRequestsTotal,
+		spoolWaitDuration:       spoolWaitDuration,
+		spoolBytesSavedTotal:    spoolBytesSavedTotal,
+
+		buildCacheUploadsTotal:             buildCacheUploadsTotal,
+		buildCacheUploadBodiesAvoidedTotal: buildCacheUploadBodiesAvoidedTotal,
+		buildCacheUploadsInflight:          buildCacheUploadsInflight,
+
+		backendRequestDuration: backendRequestDuration,
+		backendRequestsTotal:   backendRequestsTotal,
+		backendBytesTotal:      backendBytesTotal,
+
 		s3fifoAdmissionsTotal:           s3fifoAdmissionsTotal,
 		s3fifoAdmissionBytesTotal:       s3fifoAdmissionBytesTotal,
 		s3fifoGhostHitsTotal:            s3fifoGhostHitsTotal,
@@ -815,6 +859,36 @@ func RecordSpoolRequest(ctx context.Context, role, outcome string, duration time
 			globalMetrics.spoolBytesSavedTotal.Add(ctx, bytesSaved, metric.WithAttributes(attribute.String("protocol", protocol)))
 		}
 	}
+}
+
+// RecordBuildCacheUpload records a build cache upload state transition.
+func RecordBuildCacheUpload(ctx context.Context, event string) {
+	if globalMetrics == nil {
+		return
+	}
+	globalMetrics.buildCacheUploadsTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("event", event),
+	))
+}
+
+// RecordBuildCacheUploadBodyAvoided records a PUT body skipped because the
+// server acknowledged an in-flight or already-loaded upload before reading it.
+func RecordBuildCacheUploadBodyAvoided(ctx context.Context, reason string) {
+	if globalMetrics == nil {
+		return
+	}
+	globalMetrics.buildCacheUploadBodiesAvoidedTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("reason", reason),
+	))
+}
+
+// UpdateBuildCacheUploadsInflight records the current number of registered
+// build cache leader uploads.
+func UpdateBuildCacheUploadsInflight(ctx context.Context, count int) {
+	if globalMetrics == nil {
+		return
+	}
+	globalMetrics.buildCacheUploadsInflight.Record(ctx, int64(count))
 }
 
 // RecordBlobTouch records a blob access count increment.
