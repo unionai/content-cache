@@ -22,13 +22,12 @@ type uploadLease struct {
 }
 
 type uploadRegistry struct {
-	mu              sync.Mutex
-	entries         map[uploadKey]*uploadEntry
-	loadingByAction map[string]int
-	nextGeneration  uint64
-	ttl             time.Duration
-	scheduleExpiry  func(time.Duration, func()) func() bool
-	onCountChanged  func(int)
+	mu             sync.Mutex
+	entries        map[uploadKey]*uploadEntry
+	nextGeneration uint64
+	ttl            time.Duration
+	scheduleExpiry func(time.Duration, func()) func() bool
+	onCountChanged func(int)
 }
 
 func newUploadRegistry(
@@ -43,11 +42,10 @@ func newUploadRegistry(
 		}
 	}
 	return &uploadRegistry{
-		entries:         make(map[uploadKey]*uploadEntry),
-		loadingByAction: make(map[string]int),
-		ttl:             ttl,
-		scheduleExpiry:  scheduleExpiry,
-		onCountChanged:  onCountChanged,
+		entries:        make(map[uploadKey]*uploadEntry),
+		ttl:            ttl,
+		scheduleExpiry: scheduleExpiry,
+		onCountChanged: onCountChanged,
 	}
 }
 
@@ -64,7 +62,6 @@ func (r *uploadRegistry) acquire(actionID, outputID string) (*uploadLease, bool)
 	generation := r.nextGeneration
 	entry := &uploadEntry{generation: generation}
 	r.entries[key] = entry
-	r.loadingByAction[actionID]++
 	entry.stopExpiry = r.scheduleExpiry(r.ttl, func() {
 		r.remove(key, generation, false)
 	})
@@ -72,12 +69,6 @@ func (r *uploadRegistry) acquire(actionID, outputID string) (*uploadLease, bool)
 	r.notifyCountChanged(1)
 
 	return &uploadLease{registry: r, key: key, generation: generation}, true
-}
-
-func (r *uploadRegistry) isLoading(actionID string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.loadingByAction[actionID] > 0
 }
 
 func (l *uploadLease) release() {
@@ -95,11 +86,6 @@ func (r *uploadRegistry) remove(key uploadKey, generation uint64, stopExpiry boo
 		return
 	}
 	delete(r.entries, key)
-	if r.loadingByAction[key.actionID] == 1 {
-		delete(r.loadingByAction, key.actionID)
-	} else {
-		r.loadingByAction[key.actionID]--
-	}
 	if stopExpiry && entry.stopExpiry != nil {
 		entry.stopExpiry()
 	}

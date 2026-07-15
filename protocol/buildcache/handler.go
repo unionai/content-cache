@@ -86,11 +86,6 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 	telemetry.SetEndpoint(r, "get")
 	ctx := r.Context()
 	logger := h.logger.With("action_id", actionID)
-	if h.uploads.isLoading(actionID) {
-		telemetry.SetCacheResult(r, telemetry.CacheMiss)
-		http.NotFound(w, r)
-		return
-	}
 
 	entry, err := h.index.Get(ctx, actionID)
 	if err != nil {
@@ -103,12 +98,6 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if h.uploads.isLoading(actionID) {
-		telemetry.SetCacheResult(r, telemetry.CacheMiss)
-		http.NotFound(w, r)
-		return
-	}
-
 	ref, err := contentcache.ParseBlobRef(entry.BlobHash)
 	if err != nil {
 		logger.Error("invalid blob ref in index", "blob_hash", entry.BlobHash, "error", err)
@@ -124,11 +113,6 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request, actionID str
 		return
 	}
 	defer func() { _ = rc.Close() }()
-	if h.uploads.isLoading(actionID) {
-		telemetry.SetCacheResult(r, telemetry.CacheMiss)
-		http.NotFound(w, r)
-		return
-	}
 
 	telemetry.SetCacheResult(r, telemetry.CacheHit)
 	w.Header().Set("Content-Type", "application/octet-stream")

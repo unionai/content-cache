@@ -12,7 +12,6 @@ func TestUploadRegistryCoalescesOnlyMatchingOutputs(t *testing.T) {
 
 	first, leader := registry.acquire("action", "output-1")
 	require.True(t, leader)
-	require.True(t, registry.isLoading("action"))
 
 	_, leader = registry.acquire("action", "output-1")
 	require.False(t, leader)
@@ -21,10 +20,11 @@ func TestUploadRegistryCoalescesOnlyMatchingOutputs(t *testing.T) {
 	require.True(t, leader)
 
 	first.release()
-	require.True(t, registry.isLoading("action"))
+	first, leader = registry.acquire("action", "output-1")
+	require.True(t, leader)
 
 	second.release()
-	require.False(t, registry.isLoading("action"))
+	first.release()
 }
 
 func TestUploadRegistryExpiryIsGenerationSafe(t *testing.T) {
@@ -46,9 +46,12 @@ func TestUploadRegistryExpiryIsGenerationSafe(t *testing.T) {
 	// A stopped timer may already have begun running. Its callback must not
 	// delete a newer generation for the same action and output.
 	expiries[0]()
-	require.True(t, registry.isLoading("action"))
+	_, leader = registry.acquire("action", "output")
+	require.False(t, leader)
 
 	expiries[1]()
-	require.False(t, registry.isLoading("action"))
+	third, leader := registry.acquire("action", "output")
+	require.True(t, leader)
+	third.release()
 	second.release()
 }

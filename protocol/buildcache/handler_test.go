@@ -135,19 +135,12 @@ func TestHandlerInFlightFollowerReturnsNoContentWithoutReadingBody(t *testing.T)
 	followerRec := httptest.NewRecorder()
 	handler.ServeHTTP(followerRec, followerReq)
 
-	getWhileLoading := httptest.NewRecorder()
-	handler.ServeHTTP(getWhileLoading, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
 	close(leaderBody.release)
 	leaderRec := <-leaderDone
 
-	getAfterSuccess := httptest.NewRecorder()
-	handler.ServeHTTP(getAfterSuccess, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
-
 	require.Equal(t, http.StatusNoContent, followerRec.Code)
 	require.Zero(t, followerBody.readCount())
-	require.Equal(t, http.StatusNotFound, getWhileLoading.Code)
 	require.Equal(t, http.StatusNoContent, leaderRec.Code)
-	require.Equal(t, http.StatusOK, getAfterSuccess.Code)
 }
 
 func TestHandlerAlreadyLoadedPutDoesNotReadBody(t *testing.T) {
