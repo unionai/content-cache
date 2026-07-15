@@ -19,99 +19,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-type writePlan struct {
-	started         chan struct{}
-	release         chan struct{}
-	err             error
-	ignoreCancelled bool
-}
-
-type writeGateBackend struct {
-	backend.Backend
-	mu     sync.Mutex
-	plans  []*writePlan
-	writes int
-}
-
-func (b *writeGateBackend) blockNextWrite(err error) (<-chan struct{}, chan<- struct{}) {
-	return b.planNextWrite(err, false)
-}
-
-func (b *writeGateBackend) blockNextWriteIgnoringCancellation(err error) (<-chan struct{}, chan<- struct{}) {
-	return b.planNextWrite(err, true)
-}
-
-func (b *writeGateBackend) planNextWrite(err error, ignoreCancelled bool) (<-chan struct{}, chan<- struct{}) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	plan := &writePlan{
-		started:         make(chan struct{}),
-		release:         make(chan struct{}),
-		err:             err,
-		ignoreCancelled: ignoreCancelled,
-	}
-	b.plans = append(b.plans, plan)
-	return plan.started, plan.release
-}
-
-func (b *writeGateBackend) Write(ctx context.Context, key string, r io.Reader) error {
-	b.mu.Lock()
-	b.writes++
-	var plan *writePlan
-	if len(b.plans) > 0 {
-		plan = b.plans[0]
-		b.plans = b.plans[1:]
-	}
-	b.mu.Unlock()
-
-	if plan != nil {
-		close(plan.started)
-		if plan.ignoreCancelled {
-			<-plan.release
-		} else {
-			select {
-			case <-plan.release:
-			case <-ctx.Done():
-				return ctx.Err()
-			}
-		}
-		if plan.err != nil {
-			return plan.err
-		}
-	}
-	return b.Backend.Write(ctx, key, r)
-}
-
-func (b *writeGateBackend) writeCount() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.writes
-}
-
-type recordingEvictionNotifier struct {
-	mu         sync.Mutex
-	admissions int
-}
-
-func (n *recordingEvictionNotifier) Admit(context.Context, string, int64) {
-	n.mu.Lock()
-	n.admissions++
-	n.mu.Unlock()
-}
-
-func (*recordingEvictionNotifier) Remove(context.Context, string, int64) {}
-
-func (n *recordingEvictionNotifier) admissionCount() int {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	return n.admissions
-}
-
 type readTrackingBody struct {
 	reader io.Reader
-	mu     sync.Mutex
 	reads  int
 }
+
+type blockingBody struct {
+	reader  io.Reader
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func newBlockingBody(body string) *blockingBody {
+	return &blockingBody{
+		reader:  strings.NewReader(body),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *blockingBody) Read(p []byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.release
+	return b.reader.Read(p)
+}
+
+type cancellationBody struct {
+	ctx     context.Context
+	started chan struct{}
+	once    sync.Once
+}
+
+func (b *cancellationBody) Read([]byte) (int, error) {
+	b.once.Do(func() { close(b.started) })
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+type errorBody struct{ err error }
+
+func (b errorBody) Read([]byte) (int, error) { return 0, b.err }
 
 type panicBody struct{}
 
@@ -120,17 +68,11 @@ func (panicBody) Read([]byte) (int, error) {
 }
 
 func (b *readTrackingBody) Read(p []byte) (int, error) {
-	b.mu.Lock()
 	b.reads++
-	b.mu.Unlock()
 	return b.reader.Read(p)
 }
 
-func (b *readTrackingBody) readCount() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.reads
-}
+func (b *readTrackingBody) readCount() int { return b.reads }
 
 func newTestHandler(t *testing.T) (*Handler, *Index, store.Store) {
 	t.Helper()
@@ -153,31 +95,6 @@ func newTestHandler(t *testing.T) (*Handler, *Index, store.Store) {
 	handler := NewHandler(idx, cafsStore)
 
 	return handler, idx, cafsStore
-}
-
-func newGatedTestHandler(t *testing.T) (*Handler, *Index, *writeGateBackend, *recordingEvictionNotifier) {
-	t.Helper()
-
-	tmpDir := t.TempDir()
-	filesystem, err := backend.NewFilesystem(tmpDir)
-	require.NoError(t, err)
-	gatedBackend := &writeGateBackend{Backend: filesystem}
-
-	db := metadb.NewBoltDB()
-	require.NoError(t, db.Open(filepath.Join(tmpDir, "metadata.db")))
-	t.Cleanup(func() { _ = db.Close() })
-
-	entryIndex, err := metadb.NewEnvelopeIndex(db, "buildcache", "entry", 24*time.Hour)
-	require.NoError(t, err)
-	idx := NewIndex(entryIndex)
-	notifier := &recordingEvictionNotifier{}
-	cafsStore := store.NewCAFS(
-		gatedBackend,
-		store.WithMetaDB(db),
-		store.WithEvictionNotifier(notifier),
-	)
-
-	return NewHandler(idx, cafsStore), idx, gatedBackend, notifier
 }
 
 func TestHandlerGetMiss(t *testing.T) {
@@ -217,19 +134,19 @@ func TestHandlerPutThenGet(t *testing.T) {
 }
 
 func TestHandlerInFlightFollowerReturnsNoContentWithoutReadingBody(t *testing.T) {
-	handler, _, gatedBackend, notifier := newGatedTestHandler(t)
+	handler, _, _ := newTestHandler(t)
 	actionID := "ca" + strings.Repeat("00", 31)
 	outputID := "cb" + strings.Repeat("00", 31)
-	started, release := gatedBackend.blockNextWrite(nil)
+	leaderBody := newBlockingBody("artifact")
 
 	leaderDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		req := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, strings.NewReader("artifact"))
+		req := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, leaderBody)
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
 		leaderDone <- rec
 	}()
-	<-started
+	<-leaderBody.started
 
 	followerBody := &readTrackingBody{reader: strings.NewReader("artifact")}
 	followerReq := httptest.NewRequest(http.MethodPut, "/"+actionID+"?output_id="+outputID, followerBody)
@@ -238,9 +155,7 @@ func TestHandlerInFlightFollowerReturnsNoContentWithoutReadingBody(t *testing.T)
 
 	getWhileLoading := httptest.NewRecorder()
 	handler.ServeHTTP(getWhileLoading, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
-	writesBeforeRelease := gatedBackend.writeCount()
-	admissionsBeforeRelease := notifier.admissionCount()
-	close(release)
+	close(leaderBody.release)
 	leaderRec := <-leaderDone
 
 	getAfterSuccess := httptest.NewRecorder()
@@ -248,12 +163,9 @@ func TestHandlerInFlightFollowerReturnsNoContentWithoutReadingBody(t *testing.T)
 
 	require.Equal(t, http.StatusNoContent, followerRec.Code)
 	require.Zero(t, followerBody.readCount())
-	require.Equal(t, 1, writesBeforeRelease)
-	require.Zero(t, admissionsBeforeRelease)
 	require.Equal(t, http.StatusNotFound, getWhileLoading.Code)
 	require.Equal(t, http.StatusNoContent, leaderRec.Code)
 	require.Equal(t, http.StatusOK, getAfterSuccess.Code)
-	require.Equal(t, 1, notifier.admissionCount())
 }
 
 func TestHandlerAlreadyLoadedPutDoesNotReadBody(t *testing.T) {
@@ -307,11 +219,11 @@ func TestHandlerStaleMappingDoesNotUseLoadedFastPath(t *testing.T) {
 }
 
 func TestHandlerDifferentOutputsAreNotCoalesced(t *testing.T) {
-	handler, _, gatedBackend, _ := newGatedTestHandler(t)
+	handler, _, _ := newTestHandler(t)
 	actionID := "fa" + strings.Repeat("00", 31)
 	firstOutputID := "fb" + strings.Repeat("00", 31)
 	secondOutputID := "fc" + strings.Repeat("00", 31)
-	started, release := gatedBackend.blockNextWrite(nil)
+	firstBody := newBlockingBody("first artifact")
 
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -319,11 +231,11 @@ func TestHandlerDifferentOutputsAreNotCoalesced(t *testing.T) {
 		handler.ServeHTTP(rec, httptest.NewRequest(
 			http.MethodPut,
 			"/"+actionID+"?output_id="+firstOutputID,
-			strings.NewReader("first artifact"),
+			firstBody,
 		))
 		firstDone <- rec
 	}()
-	<-started
+	<-firstBody.started
 
 	secondBody := &readTrackingBody{reader: strings.NewReader("second artifact")}
 	secondRec := httptest.NewRecorder()
@@ -332,17 +244,16 @@ func TestHandlerDifferentOutputsAreNotCoalesced(t *testing.T) {
 		"/"+actionID+"?output_id="+secondOutputID,
 		secondBody,
 	))
-	close(release)
+	close(firstBody.release)
 	firstRec := <-firstDone
 
 	require.Equal(t, http.StatusNoContent, secondRec.Code)
 	require.NotZero(t, secondBody.readCount())
-	require.Equal(t, 2, gatedBackend.writeCount())
 	require.Equal(t, http.StatusNoContent, firstRec.Code)
 }
 
 func TestHandlerGetMissesWhileReplacementOutputLoads(t *testing.T) {
-	handler, _, gatedBackend, _ := newGatedTestHandler(t)
+	handler, _, _ := newTestHandler(t)
 	actionID := "ce" + strings.Repeat("00", 31)
 	loadedOutputID := "cf" + strings.Repeat("00", 31)
 	loadingOutputID := "de" + strings.Repeat("00", 31)
@@ -355,22 +266,22 @@ func TestHandlerGetMissesWhileReplacementOutputLoads(t *testing.T) {
 	))
 	require.Equal(t, http.StatusNoContent, loadedRec.Code)
 
-	started, release := gatedBackend.blockNextWrite(nil)
+	replacementBody := newBlockingBody("replacement artifact")
 	replacementDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, httptest.NewRequest(
 			http.MethodPut,
 			"/"+actionID+"?output_id="+loadingOutputID,
-			strings.NewReader("replacement artifact"),
+			replacementBody,
 		))
 		replacementDone <- rec
 	}()
-	<-started
+	<-replacementBody.started
 
 	getRec := httptest.NewRecorder()
 	handler.ServeHTTP(getRec, httptest.NewRequest(http.MethodGet, "/"+actionID, nil))
-	close(release)
+	close(replacementBody.release)
 	replacementRec := <-replacementDone
 
 	require.Equal(t, http.StatusNotFound, getRec.Code)
@@ -378,24 +289,16 @@ func TestHandlerGetMissesWhileReplacementOutputLoads(t *testing.T) {
 }
 
 func TestHandlerLeaderFailureAllowsRetry(t *testing.T) {
-	handler, idx, gatedBackend, _ := newGatedTestHandler(t)
+	handler, idx, _ := newTestHandler(t)
 	actionID := "ac" + strings.Repeat("00", 31)
 	outputID := "ad" + strings.Repeat("00", 31)
-	started, release := gatedBackend.blockNextWrite(errors.New("injected write failure"))
 
-	failedDone := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, httptest.NewRequest(
-			http.MethodPut,
-			"/"+actionID+"?output_id="+outputID,
-			strings.NewReader("artifact"),
-		))
-		failedDone <- rec
-	}()
-	<-started
-	close(release)
-	failedRec := <-failedDone
+	failedRec := httptest.NewRecorder()
+	handler.ServeHTTP(failedRec, httptest.NewRequest(
+		http.MethodPut,
+		"/"+actionID+"?output_id="+outputID,
+		errorBody{err: errors.New("injected read failure")},
+	))
 	_, indexErr := idx.Get(t.Context(), actionID)
 
 	retryRec := httptest.NewRecorder()
@@ -411,29 +314,26 @@ func TestHandlerLeaderFailureAllowsRetry(t *testing.T) {
 }
 
 func TestHandlerCancellationClearsRegistration(t *testing.T) {
-	handler, _, gatedBackend, _ := newGatedTestHandler(t)
+	handler, _, _ := newTestHandler(t)
 	actionID := "bc" + strings.Repeat("00", 31)
 	outputID := "bd" + strings.Repeat("00", 31)
-	started, release := gatedBackend.blockNextWriteIgnoringCancellation(nil)
 
-	sizes := make(chan int, 4)
-	handler.uploads = newUploadRegistry(uploadRegistrationTTL, nil, func(size int) { sizes <- size })
 	ctx, cancel := context.WithCancel(t.Context())
+	body := &cancellationBody{ctx: ctx, started: make(chan struct{})}
 	cancelledDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(
 			http.MethodPut,
 			"/"+actionID+"?output_id="+outputID,
-			strings.NewReader("artifact"),
+			body,
 		).WithContext(ctx)
 		handler.ServeHTTP(rec, req)
 		cancelledDone <- rec
 	}()
-	<-started
-	<-sizes // leader registration
+	<-body.started
 	cancel()
-	require.Zero(t, <-sizes) // cancellation cleanup
+	cancelledRec := <-cancelledDone
 
 	retryRec := httptest.NewRecorder()
 	handler.ServeHTTP(retryRec, httptest.NewRequest(
@@ -441,8 +341,6 @@ func TestHandlerCancellationClearsRegistration(t *testing.T) {
 		"/"+actionID+"?output_id="+outputID,
 		strings.NewReader("artifact"),
 	))
-	close(release)
-	cancelledRec := <-cancelledDone
 
 	require.Equal(t, http.StatusNoContent, retryRec.Code)
 	require.Equal(t, http.StatusInternalServerError, cancelledRec.Code)

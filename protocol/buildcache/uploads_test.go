@@ -52,3 +52,16 @@ func TestUploadRegistryExpiryIsGenerationSafe(t *testing.T) {
 	require.False(t, registry.isLoading("action"))
 	second.release()
 }
+
+func TestUploadRegistryReportsInflightDeltas(t *testing.T) {
+	var deltas []int
+	registry := newUploadRegistry(time.Minute, nil, func(delta int) {
+		deltas = append(deltas, delta)
+	})
+
+	lease, leader := registry.acquire("action", "output")
+	require.True(t, leader)
+	lease.release()
+
+	require.Equal(t, []int{1, -1}, deltas)
+}

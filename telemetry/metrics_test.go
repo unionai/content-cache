@@ -60,28 +60,24 @@ func setupTestMetrics(t *testing.T) *sdkmetric.ManualReader {
 	buildCacheUploadsTotal, err := meter.Int64Counter("content_cache_buildcache_uploads_total")
 	require.NoError(t, err)
 
-	buildCacheUploadBodiesAvoidedTotal, err := meter.Int64Counter("content_cache_buildcache_upload_bodies_avoided_total")
-	require.NoError(t, err)
-
-	buildCacheUploadsInflight, err := meter.Int64Gauge("content_cache_buildcache_uploads_inflight")
+	buildCacheUploadsInflight, err := meter.Int64UpDownCounter("content_cache_buildcache_uploads_inflight")
 	require.NoError(t, err)
 
 	globalMetrics = &Metrics{
-		requestsTotal:                      requestsTotal,
-		responseBytesTotal:                 responseBytesTotal,
-		requestDuration:                    requestDuration,
-		requestsByEndpointTotal:            requestsByEndpointTotal,
-		authRequestsTotal:                  authRequestsTotal,
-		spoolRequestsTotal:                 spoolRequestsTotal,
-		spoolWaitDuration:                  spoolWaitDuration,
-		spoolBytesSavedTotal:               spoolBytesSavedTotal,
-		buildCacheUploadsTotal:             buildCacheUploadsTotal,
-		buildCacheUploadBodiesAvoidedTotal: buildCacheUploadBodiesAvoidedTotal,
-		buildCacheUploadsInflight:          buildCacheUploadsInflight,
-		s3fifoEvictionErrorsTotal:          s3fifoEvictionErrorsTotal,
-		s3fifoEvictionBlockedTotal:         s3fifoEvictionBlockedTotal,
-		s3fifoOrphanedQueueEntriesTotal:    s3fifoOrphanedQueueEntriesTotal,
-		meterProvider:                      mp,
+		requestsTotal:                   requestsTotal,
+		responseBytesTotal:              responseBytesTotal,
+		requestDuration:                 requestDuration,
+		requestsByEndpointTotal:         requestsByEndpointTotal,
+		authRequestsTotal:               authRequestsTotal,
+		spoolRequestsTotal:              spoolRequestsTotal,
+		spoolWaitDuration:               spoolWaitDuration,
+		spoolBytesSavedTotal:            spoolBytesSavedTotal,
+		buildCacheUploadsTotal:          buildCacheUploadsTotal,
+		buildCacheUploadsInflight:       buildCacheUploadsInflight,
+		s3fifoEvictionErrorsTotal:       s3fifoEvictionErrorsTotal,
+		s3fifoEvictionBlockedTotal:      s3fifoEvictionBlockedTotal,
+		s3fifoOrphanedQueueEntriesTotal: s3fifoOrphanedQueueEntriesTotal,
+		meterProvider:                   mp,
 	}
 
 	t.Cleanup(func() {
@@ -105,9 +101,7 @@ func TestRecordBuildCacheUploadMetrics(t *testing.T) {
 	} {
 		RecordBuildCacheUpload(ctx, event)
 	}
-	RecordBuildCacheUploadBodyAvoided(ctx, "inflight")
-	RecordBuildCacheUploadBodyAvoided(ctx, "already_loaded")
-	UpdateBuildCacheUploadsInflight(ctx, 3)
+	AddBuildCacheUploadsInflight(ctx, 3)
 
 	rm := collectMetrics(t, reader)
 	uploads := findCounter(rm, "content_cache_buildcache_uploads_total")
@@ -122,12 +116,7 @@ func TestRecordBuildCacheUploadMetrics(t *testing.T) {
 		require.True(t, anyPointHasAttr(uploads, "event", event), event)
 	}
 
-	avoided := findCounter(rm, "content_cache_buildcache_upload_bodies_avoided_total")
-	require.Len(t, avoided, 2)
-	require.True(t, anyPointHasAttr(avoided, "reason", "inflight"))
-	require.True(t, anyPointHasAttr(avoided, "reason", "already_loaded"))
-
-	inflight := findGauge(rm, "content_cache_buildcache_uploads_inflight")
+	inflight := findCounter(rm, "content_cache_buildcache_uploads_inflight")
 	require.Len(t, inflight, 1)
 	require.EqualValues(t, 3, inflight[0].Value)
 }
@@ -186,19 +175,6 @@ func findHistogram(rm metricdata.ResourceMetrics, name string) []metricdata.Hist
 			if m.Name == name {
 				if hist, ok := m.Data.(metricdata.Histogram[float64]); ok {
 					return hist.DataPoints
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func findGauge(rm metricdata.ResourceMetrics, name string) []metricdata.DataPoint[int64] {
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name == name {
-				if gauge, ok := m.Data.(metricdata.Gauge[int64]); ok {
-					return gauge.DataPoints
 				}
 			}
 		}

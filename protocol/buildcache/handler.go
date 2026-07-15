@@ -43,14 +43,13 @@ func NewHandler(index *Index, store store.Store, opts ...HandlerOption) *Handler
 		index:  index,
 		store:  store,
 		logger: slog.Default(),
-		uploads: newUploadRegistry(uploadRegistrationTTL, nil, func(size int) {
-			telemetry.UpdateBuildCacheUploadsInflight(context.Background(), size)
+		uploads: newUploadRegistry(uploadRegistrationTTL, nil, func(delta int) {
+			telemetry.AddBuildCacheUploadsInflight(context.Background(), delta)
 		}),
 	}
 	for _, opt := range opts {
 		opt(h)
 	}
-	telemetry.UpdateBuildCacheUploadsInflight(context.Background(), 0)
 	return h
 }
 
@@ -164,7 +163,6 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 			}
 			if exists {
 				telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadAlreadyLoaded)
-				telemetry.RecordBuildCacheUploadBodyAvoided(ctx, "already_loaded")
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
@@ -178,7 +176,6 @@ func (h *Handler) handlePut(w http.ResponseWriter, r *http.Request, actionID str
 	lease, leader := h.uploads.acquire(actionID, outputID)
 	if !leader {
 		telemetry.RecordBuildCacheUpload(ctx, telemetry.BuildCacheUploadInflightFollower)
-		telemetry.RecordBuildCacheUploadBodyAvoided(ctx, "inflight")
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

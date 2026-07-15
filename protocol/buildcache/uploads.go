@@ -28,13 +28,13 @@ type uploadRegistry struct {
 	nextGeneration  uint64
 	ttl             time.Duration
 	scheduleExpiry  func(time.Duration, func()) func() bool
-	onSizeChanged   func(int)
+	onCountChanged  func(int)
 }
 
 func newUploadRegistry(
 	ttl time.Duration,
 	scheduleExpiry func(time.Duration, func()) func() bool,
-	onSizeChanged func(int),
+	onCountChanged func(int),
 ) *uploadRegistry {
 	if scheduleExpiry == nil {
 		scheduleExpiry = func(after time.Duration, expire func()) func() bool {
@@ -47,7 +47,7 @@ func newUploadRegistry(
 		loadingByAction: make(map[string]int),
 		ttl:             ttl,
 		scheduleExpiry:  scheduleExpiry,
-		onSizeChanged:   onSizeChanged,
+		onCountChanged:  onCountChanged,
 	}
 }
 
@@ -68,9 +68,8 @@ func (r *uploadRegistry) acquire(actionID, outputID string) (*uploadLease, bool)
 	entry.stopExpiry = r.scheduleExpiry(r.ttl, func() {
 		r.remove(key, generation, false)
 	})
-	size := len(r.entries)
-	r.notifySizeChanged(size)
 	r.mu.Unlock()
+	r.notifyCountChanged(1)
 
 	return &uploadLease{registry: r, key: key, generation: generation}, true
 }
@@ -104,13 +103,12 @@ func (r *uploadRegistry) remove(key uploadKey, generation uint64, stopExpiry boo
 	if stopExpiry && entry.stopExpiry != nil {
 		entry.stopExpiry()
 	}
-	size := len(r.entries)
-	r.notifySizeChanged(size)
 	r.mu.Unlock()
+	r.notifyCountChanged(-1)
 }
 
-func (r *uploadRegistry) notifySizeChanged(size int) {
-	if r.onSizeChanged != nil {
-		r.onSizeChanged(size)
+func (r *uploadRegistry) notifyCountChanged(delta int) {
+	if r.onCountChanged != nil {
+		r.onCountChanged(delta)
 	}
 }

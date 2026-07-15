@@ -60,9 +60,8 @@ type Metrics struct {
 	spoolWaitDuration       metric.Float64Histogram
 	spoolBytesSavedTotal    metric.Int64Counter
 
-	buildCacheUploadsTotal             metric.Int64Counter
-	buildCacheUploadBodiesAvoidedTotal metric.Int64Counter
-	buildCacheUploadsInflight          metric.Int64Gauge
+	buildCacheUploadsTotal    metric.Int64Counter
+	buildCacheUploadsInflight metric.Int64UpDownCounter
 
 	backendRequestDuration metric.Float64Histogram
 	backendRequestsTotal   metric.Int64Counter
@@ -287,16 +286,7 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		return err
 	}
 
-	buildCacheUploadBodiesAvoidedTotal, err := meter.Int64Counter(
-		"content_cache_buildcache_upload_bodies_avoided_total",
-		metric.WithDescription("Build cache upload bodies avoided by early acknowledgement"),
-		metric.WithUnit("{body}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	buildCacheUploadsInflight, err := meter.Int64Gauge(
+	buildCacheUploadsInflight, err := meter.Int64UpDownCounter(
 		"content_cache_buildcache_uploads_inflight",
 		metric.WithDescription("Current build cache leader uploads registered in memory"),
 		metric.WithUnit("{upload}"),
@@ -578,9 +568,8 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		spoolWaitDuration:       spoolWaitDuration,
 		spoolBytesSavedTotal:    spoolBytesSavedTotal,
 
-		buildCacheUploadsTotal:             buildCacheUploadsTotal,
-		buildCacheUploadBodiesAvoidedTotal: buildCacheUploadBodiesAvoidedTotal,
-		buildCacheUploadsInflight:          buildCacheUploadsInflight,
+		buildCacheUploadsTotal:    buildCacheUploadsTotal,
+		buildCacheUploadsInflight: buildCacheUploadsInflight,
 
 		backendRequestDuration: backendRequestDuration,
 		backendRequestsTotal:   backendRequestsTotal,
@@ -871,24 +860,13 @@ func RecordBuildCacheUpload(ctx context.Context, event string) {
 	))
 }
 
-// RecordBuildCacheUploadBodyAvoided records a PUT body skipped because the
-// server acknowledged an in-flight or already-loaded upload before reading it.
-func RecordBuildCacheUploadBodyAvoided(ctx context.Context, reason string) {
+// AddBuildCacheUploadsInflight adjusts the current number of registered build
+// cache leader uploads.
+func AddBuildCacheUploadsInflight(ctx context.Context, delta int) {
 	if globalMetrics == nil {
 		return
 	}
-	globalMetrics.buildCacheUploadBodiesAvoidedTotal.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("reason", reason),
-	))
-}
-
-// UpdateBuildCacheUploadsInflight records the current number of registered
-// build cache leader uploads.
-func UpdateBuildCacheUploadsInflight(ctx context.Context, count int) {
-	if globalMetrics == nil {
-		return
-	}
-	globalMetrics.buildCacheUploadsInflight.Record(ctx, int64(count))
+	globalMetrics.buildCacheUploadsInflight.Add(ctx, int64(delta))
 }
 
 // RecordBlobTouch records a blob access count increment.
