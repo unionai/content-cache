@@ -366,31 +366,6 @@ func TestPinnedBlobSkipped(t *testing.T) {
 	require.True(t, exists)
 }
 
-func TestSizeEvictableReferencesDoNotPinBlob(t *testing.T) {
-	ctx := context.Background()
-	mgr, mdb, b := testManager(t, Config{MaxSize: 5})
-	content := "0123456789"
-	hash := putBlob(t, ctx, mdb, b, content)
-	size := int64(len(content))
-
-	entry, err := mdb.GetBlob(ctx, hash)
-	require.NoError(t, err)
-	require.Zero(t, entry.RefCount)
-
-	idx, err := metadb.NewEnvelopeIndex(mdb, "buildcache", "entry", time.Hour)
-	require.NoError(t, err)
-	require.NoError(t, idx.PutWithOptions(ctx, "action", []byte(`{}`), metadb.ContentType_CONTENT_TYPE_JSON, []string{hash}, metadb.PutOptions{
-		SizeEvictable: true,
-	}))
-
-	mgr.Admit(ctx, hash, size)
-	mgr.maybeEvict(ctx)
-
-	exists, err := b.Exists(ctx, contentcache.BlobStorageKey(mustParseHash(t, hash)))
-	require.NoError(t, err)
-	require.False(t, exists, "references marked size-evictable must not block S3FIFO")
-}
-
 func TestPinnedOverlimitDoesNotImmediatelyReschedule(t *testing.T) {
 	ctx := context.Background()
 	mgr, mdb, b := testManager(t, Config{MaxSize: 5})

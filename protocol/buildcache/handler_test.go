@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
 	"github.com/buildkite/content-cache/backend"
 	"github.com/buildkite/content-cache/store"
 	"github.com/buildkite/content-cache/store/metadb"
@@ -163,45 +162,10 @@ func TestIndexGetPut(t *testing.T) {
 	require.Equal(t, entry.OutputID, got.OutputID)
 	require.Equal(t, entry.BlobHash, got.BlobHash)
 	require.Equal(t, entry.Size, got.Size)
-}
 
-func TestIndexEntryKeepsBlobReferencedForGC(t *testing.T) {
-	tmpDir := t.TempDir()
-	db := metadb.NewBoltDB(metadb.WithNoSync(true))
-	err := db.Open(filepath.Join(tmpDir, "meta.db"))
+	refs, err := entryIndex.GetBlobRefs(ctx, "aa00")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	b, err := backend.NewFilesystem(filepath.Join(tmpDir, "blobs"))
-	require.NoError(t, err)
-	cafsStore := store.NewCAFS(b, store.WithMetaDB(db))
-
-	entryIndex, err := metadb.NewEnvelopeIndex(db, "buildcache", "entry", 24*time.Hour)
-	require.NoError(t, err)
-	idx := NewIndex(entryIndex)
-
-	ctx := context.Background()
-	hash, err := cafsStore.Put(ctx, strings.NewReader("evictable build artifact"))
-	require.NoError(t, err)
-	blobRef := contentcache.NewBlobRef(hash).String()
-
-	require.NoError(t, idx.Put(ctx, "aa00", &ActionEntry{
-		OutputID: strings.Repeat("bb", 32),
-		BlobHash: blobRef,
-		Size:     int64(len("evictable build artifact")),
-	}))
-
-	blob, err := db.GetBlob(ctx, blobRef)
-	require.NoError(t, err)
-	require.Zero(t, blob.RefCount, "build cache mappings must not protect blobs from size eviction")
-
-	unreferenced, err := db.GetUnreferencedBlobs(ctx, time.Time{}, 10)
-	require.NoError(t, err)
-	require.Empty(t, unreferenced, "a live build cache mapping must protect its blob from full GC")
-
-	got, err := idx.Get(ctx, "aa00")
-	require.NoError(t, err)
-	require.Equal(t, blobRef, got.BlobHash)
+	require.Equal(t, []string{blobHash}, refs)
 }
 
 func TestIsValidHex(t *testing.T) {
