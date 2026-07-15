@@ -13,20 +13,17 @@ import (
 
 // RefcountDiscrepancy represents a mismatch between stored and computed refcounts.
 type RefcountDiscrepancy struct {
-	Hash                  string `json:"hash"`
-	Stored                int    `json:"stored"`
-	Computed              int    `json:"computed"`
-	StoredSizeEvictable   uint64 `json:"stored_size_evictable"`
-	ComputedSizeEvictable uint64 `json:"computed_size_evictable"`
+	Hash     string `json:"hash"`
+	Stored   int    `json:"stored"`
+	Computed int    `json:"computed"`
 }
 
-type envelopeRefcounts struct {
-	protected     int
-	sizeEvictable uint64
-}
+// VerifyEnvelopeRefcounts scans all envelope metadata and compares computed
+// refcounts to stored blob refcounts. Returns discrepancies without modifying the database.
+// This is useful for detecting bugs or corruption.
+func (b *BoltDB) VerifyEnvelopeRefcounts(ctx context.Context) ([]RefcountDiscrepancy, error) {
+	computed := make(map[string]int)
 
-func (b *BoltDB) computeEnvelopeRefcounts() (map[string]envelopeRefcounts, error) {
-	computed := make(map[string]envelopeRefcounts)
 	err := b.db.View(func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
@@ -40,57 +37,7 @@ func (b *BoltDB) computeEnvelopeRefcounts() (map[string]envelopeRefcounts, error
 				continue
 			}
 			for _, ref := range protectedRefs(&env) {
-				counts := computed[ref]
-				counts.protected++
-				computed[ref] = counts
-			}
-			for _, ref := range sizeEvictableRefs(&env) {
-				counts := computed[ref]
-				counts.sizeEvictable++
-				computed[ref] = counts
-			}
-		}
-		return nil
-	})
-	return computed, err
-}
-
-// VerifyEnvelopeRefcounts scans all envelope metadata and compares computed
-// protected and size-evictable refcounts to their stored values. It returns
-// discrepancies without modifying the database.
-func (b *BoltDB) VerifyEnvelopeRefcounts(_ context.Context) ([]RefcountDiscrepancy, error) {
-	computed, err := b.computeEnvelopeRefcounts()
-	if err != nil {
-		return nil, err
-	}
-
-	stored := make(map[string]envelopeRefcounts)
-	err = b.db.View(func(tx *bbolt.Tx) error {
-		blobBucket := tx.Bucket(bucketBlobsByHash)
-		if blobBucket != nil {
-			cursor := blobBucket.Cursor()
-			for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-				var entry BlobEntry
-				if err := json.Unmarshal(v, &entry); err != nil {
-					continue
-				}
-				counts := stored[string(k)]
-				counts.protected = entry.RefCount
-				stored[string(k)] = counts
-			}
-		}
-
-		sizeBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
-		if sizeBucket != nil {
-			cursor := sizeBucket.Cursor()
-			for k, _ := cursor.First(); k != nil; k, _ = cursor.Next() {
-				count, err := sizeEvictableBlobRefCountInTx(sizeBucket, string(k))
-				if err != nil {
-					return err
-				}
-				counts := stored[string(k)]
-				counts.sizeEvictable = count
-				stored[string(k)] = counts
+				computed[ref]++
 			}
 		}
 		return nil
@@ -100,110 +47,117 @@ func (b *BoltDB) VerifyEnvelopeRefcounts(_ context.Context) ([]RefcountDiscrepan
 	}
 
 	var discrepancies []RefcountDiscrepancy
-	for hash, expected := range computed {
-		actual := stored[hash]
-		if actual != expected {
-			discrepancies = append(discrepancies, RefcountDiscrepancy{
-				Hash:                  hash,
-				Stored:                actual.protected,
-				Computed:              expected.protected,
-				StoredSizeEvictable:   actual.sizeEvictable,
-				ComputedSizeEvictable: expected.sizeEvictable,
-			})
-		}
-		delete(stored, hash)
-	}
-	for hash, actual := range stored {
-		if actual == (envelopeRefcounts{}) {
-			continue
-		}
-		discrepancies = append(discrepancies, RefcountDiscrepancy{
-			Hash:                hash,
-			Stored:              actual.protected,
-			StoredSizeEvictable: actual.sizeEvictable,
-		})
-	}
 
-	return discrepancies, nil
-}
-
-// RebuildEnvelopeRefcounts recomputes protected blob refcounts and compact
-// size-evictable refcounts from envelope metadata.
-// Use after VerifyEnvelopeRefcounts detects discrepancies.
-func (b *BoltDB) RebuildEnvelopeRefcounts(_ context.Context) (int, error) {
-	computed, err := b.computeEnvelopeRefcounts()
-	if err != nil {
-		return 0, err
-	}
-
-	updatedHashes := make(map[string]struct{})
-	err = b.db.Update(func(tx *bbolt.Tx) error {
+	err = b.db.View(func(tx *bbolt.Tx) error {
 		blobBucket := tx.Bucket(bucketBlobsByHash)
-		if blobBucket != nil {
-			cursor := blobBucket.Cursor()
-			for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
-				hash := string(k)
-
-				var entry BlobEntry
-				if err := json.Unmarshal(v, &entry); err != nil {
-					continue
-				}
-
-				expected := computed[hash]
-				if entry.RefCount != expected.protected {
-					entry.RefCount = expected.protected
-					data, err := json.Marshal(&entry)
-					if err != nil {
-						continue
-					}
-					if err := blobBucket.Put(k, data); err != nil {
-						return err
-					}
-					updatedHashes[hash] = struct{}{}
-				}
+		if blobBucket == nil {
+			for hash, count := range computed {
+				discrepancies = append(discrepancies, RefcountDiscrepancy{
+					Hash:     hash,
+					Stored:   0,
+					Computed: count,
+				})
 			}
-		}
-
-		sizeBucket := tx.Bucket(bucketSizeEvictableBlobRefs)
-		if sizeBucket == nil {
 			return nil
 		}
-		storedSizeCounts := make(map[string]uint64)
-		cursor := sizeBucket.Cursor()
-		for k, _ := cursor.First(); k != nil; k, _ = cursor.Next() {
+
+		cursor := blobBucket.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
 			hash := string(k)
-			actual, err := sizeEvictableBlobRefCountInTx(sizeBucket, hash)
-			if err != nil {
-				return err
-			}
-			storedSizeCounts[hash] = actual
-		}
-		for hash, actual := range storedSizeCounts {
-			expected := computed[hash].sizeEvictable
-			if actual != expected {
-				if err := putSizeEvictableBlobRefCountInTx(sizeBucket, hash, expected); err != nil {
-					return err
-				}
-				updatedHashes[hash] = struct{}{}
-			}
-		}
-		for hash, counts := range computed {
-			if counts.sizeEvictable == 0 {
+
+			var entry BlobEntry
+			if err := json.Unmarshal(v, &entry); err != nil {
 				continue
 			}
-			if _, ok := storedSizeCounts[hash]; ok {
-				continue
+
+			expected := computed[hash]
+			if entry.RefCount != expected {
+				discrepancies = append(discrepancies, RefcountDiscrepancy{
+					Hash:     hash,
+					Stored:   entry.RefCount,
+					Computed: expected,
+				})
 			}
-			if err := putSizeEvictableBlobRefCountInTx(sizeBucket, hash, counts.sizeEvictable); err != nil {
-				return err
-			}
-			updatedHashes[hash] = struct{}{}
+			delete(computed, hash)
+		}
+
+		for hash, count := range computed {
+			discrepancies = append(discrepancies, RefcountDiscrepancy{
+				Hash:     hash,
+				Stored:   0,
+				Computed: count,
+			})
 		}
 
 		return nil
 	})
 
-	return len(updatedHashes), err
+	return discrepancies, err
+}
+
+// RebuildEnvelopeRefcounts recomputes all blob refcounts from envelope metadata.
+// This updates the RefCount field in each BlobEntry based on actual references.
+// Use after VerifyEnvelopeRefcounts detects discrepancies.
+func (b *BoltDB) RebuildEnvelopeRefcounts(ctx context.Context) (int, error) {
+	computed := make(map[string]int)
+
+	err := b.db.View(func(tx *bbolt.Tx) error {
+		envBucket := tx.Bucket(bucketEnvelopes)
+		if envBucket == nil {
+			return nil
+		}
+
+		cursor := envBucket.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			var env MetadataEnvelope
+			if err := proto.Unmarshal(v, &env); err != nil {
+				continue
+			}
+			for _, ref := range protectedRefs(&env) {
+				computed[ref]++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	updated := 0
+	err = b.db.Update(func(tx *bbolt.Tx) error {
+		blobBucket := tx.Bucket(bucketBlobsByHash)
+		if blobBucket == nil {
+			return nil
+		}
+
+		cursor := blobBucket.Cursor()
+		for k, v := cursor.First(); k != nil; k, v = cursor.Next() {
+			hash := string(k)
+
+			var entry BlobEntry
+			if err := json.Unmarshal(v, &entry); err != nil {
+				continue
+			}
+
+			expected := computed[hash]
+			if entry.RefCount != expected {
+				entry.RefCount = expected
+				data, err := json.Marshal(&entry)
+				if err != nil {
+					continue
+				}
+				if err := blobBucket.Put(k, data); err != nil {
+					return err
+				}
+				updated++
+			}
+			delete(computed, hash)
+		}
+
+		return nil
+	})
+
+	return updated, err
 }
 
 // EnvelopeDBStats contains statistics about the envelope database.

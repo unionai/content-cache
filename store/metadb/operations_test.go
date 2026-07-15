@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"go.etcd.io/bbolt"
 )
 
 func setupOperationsTestDB(t *testing.T) *BoltDB {
@@ -18,13 +17,6 @@ func setupOperationsTestDB(t *testing.T) *BoltDB {
 	require.NoError(t, db.Open(path))
 	t.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-func setSizeEvictableRefCount(t *testing.T, db *BoltDB, hash string, count uint64) {
-	t.Helper()
-	require.NoError(t, db.db.Update(func(tx *bbolt.Tx) error {
-		return putSizeEvictableBlobRefCountInTx(tx.Bucket(bucketSizeEvictableBlobRefs), hash, count)
-	}))
 }
 
 func TestVerifyEnvelopeRefcounts_NoDiscrepancies(t *testing.T) {
@@ -100,31 +92,6 @@ func TestVerifyEnvelopeRefcounts_DetectsMissingBlob(t *testing.T) {
 	require.Equal(t, 1, discrepancies[0].Computed)
 }
 
-func TestVerifyEnvelopeRefcounts_DetectsSizeEvictableDiscrepancy(t *testing.T) {
-	db := setupOperationsTestDB(t)
-	ctx := context.Background()
-
-	hash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: hash, Size: 100}))
-
-	env := &MetadataEnvelope{
-		EnvelopeVersion: 1,
-		Payload:         []byte(`{}`),
-		BlobRefs:        []string{hash},
-	}
-	markSizeEvictableRefs(env)
-	require.NoError(t, db.PutEnvelope(ctx, "buildcache", "index", "key", env))
-
-	setSizeEvictableRefCount(t, db, hash, 7)
-
-	discrepancies, err := db.VerifyEnvelopeRefcounts(ctx)
-	require.NoError(t, err)
-	require.Len(t, discrepancies, 1)
-	require.Equal(t, hash, discrepancies[0].Hash)
-	require.Equal(t, uint64(7), discrepancies[0].StoredSizeEvictable)
-	require.Equal(t, uint64(1), discrepancies[0].ComputedSizeEvictable)
-}
-
 func TestRebuildEnvelopeRefcounts(t *testing.T) {
 	db := setupOperationsTestDB(t)
 	ctx := context.Background()
@@ -145,19 +112,16 @@ func TestRebuildEnvelopeRefcounts(t *testing.T) {
 		Payload:         []byte(`{}`),
 		BlobRefs:        []string{hash1, hash2},
 	}
-	markSizeEvictableRefs(env2)
 	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg1", env1))
 	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg2", env2))
 
 	blob1, _ := db.GetBlob(ctx, hash1)
 	blob1.RefCount = 99
 	require.NoError(t, db.PutBlob(ctx, blob1))
-	setSizeEvictableRefCount(t, db, hash1, 88)
 
 	blob2, _ := db.GetBlob(ctx, hash2)
 	blob2.RefCount = 50
 	require.NoError(t, db.PutBlob(ctx, blob2))
-	setSizeEvictableRefCount(t, db, hash2, 44)
 
 	discrepancies, _ := db.VerifyEnvelopeRefcounts(ctx)
 	require.NotEmpty(t, discrepancies, "should have discrepancies after manual refcount corruption")
@@ -171,16 +135,10 @@ func TestRebuildEnvelopeRefcounts(t *testing.T) {
 	require.Empty(t, discrepancies)
 
 	blob1, _ = db.GetBlob(ctx, hash1)
-	require.Equal(t, 1, blob1.RefCount)
-	sizeEvictableCount, err := db.sizeEvictableBlobRefCount(hash1)
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), sizeEvictableCount)
+	require.Equal(t, 2, blob1.RefCount)
 
 	blob2, _ = db.GetBlob(ctx, hash2)
-	require.Zero(t, blob2.RefCount)
-	sizeEvictableCount, err = db.sizeEvictableBlobRefCount(hash2)
-	require.NoError(t, err)
-	require.Equal(t, uint64(1), sizeEvictableCount)
+	require.Equal(t, 1, blob2.RefCount)
 }
 
 func TestEnvelopeStats(t *testing.T) {

@@ -64,22 +64,11 @@ func markSizeEvictableRefs(env *MetadataEnvelope) {
 	env.Attributes[sizeEvictableRefsAttribute] = []byte{1}
 }
 
-func sizeEvictableRefs(env *MetadataEnvelope) []string {
-	if !refsAreSizeEvictable(env) {
-		return nil
-	}
-	return env.BlobRefs
-}
-
 func protectedRefs(env *MetadataEnvelope) []string {
-	if env == nil || refsAreSizeEvictable(env) {
+	if env == nil || bytes.Equal(env.Attributes[sizeEvictableRefsAttribute], []byte{1}) {
 		return nil
 	}
 	return env.BlobRefs
-}
-
-func refsAreSizeEvictable(env *MetadataEnvelope) bool {
-	return env != nil && bytes.Equal(env.Attributes[sizeEvictableRefsAttribute], []byte{1})
 }
 
 // EnvelopeCodec handles envelope encoding/decoding with optional compression.

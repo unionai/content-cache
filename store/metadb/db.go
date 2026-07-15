@@ -63,8 +63,8 @@ type MetaDB interface {
 
 	// Eviction queries
 	GetExpiredMeta(ctx context.Context, before time.Time, limit int) ([]ExpiryEntry, error)
-	// GetUnreferencedBlobs returns blobs without protected or size-evictable
-	// refs whose last access is before the cutoff. A zero time skips the cutoff.
+	// GetUnreferencedBlobs returns blobs without metadata references whose last
+	// access is before the cutoff. A zero time skips the cutoff.
 	GetUnreferencedBlobs(ctx context.Context, before time.Time, limit int) ([]string, error)
 }
 
