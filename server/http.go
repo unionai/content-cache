@@ -189,14 +189,6 @@ type Config struct {
 	// Defaults to <StoragePath>/metadata.db.
 	MetadataDSN string
 
-	// MetadataBatchSize is the maximum number of callbacks in one bbolt batch.
-	// Default: 100.
-	MetadataBatchSize int
-
-	// MetadataBatchDelay is the maximum time bbolt waits before starting a batch.
-	// Default: 10ms.
-	MetadataBatchDelay time.Duration
-
 	// Logger for the server
 	Logger *slog.Logger
 }
@@ -244,14 +236,7 @@ func openMetaBackend(cfg Config) (metadb.MetaDB, func() (s3fifo.Queues, error), 
 	if dsn == "" {
 		dsn = path.Join(cfg.StoragePath, "metadata.db")
 	}
-	boltOpts := make([]metadb.BoltDBOption, 0, 2)
-	if cfg.MetadataBatchSize > 0 {
-		boltOpts = append(boltOpts, metadb.WithBatchSize(cfg.MetadataBatchSize))
-	}
-	if cfg.MetadataBatchDelay > 0 {
-		boltOpts = append(boltOpts, metadb.WithBatchDelay(cfg.MetadataBatchDelay))
-	}
-	boltDB := metadb.NewBoltDB(boltOpts...)
+	boltDB := metadb.NewBoltDB()
 	if err := boltDB.Open(dsn); err != nil {
 		return nil, nil, fmt.Errorf("opening bolt metadata database: %w", err)
 	}

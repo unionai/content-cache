@@ -9,6 +9,8 @@ import (
 )
 
 // EnvelopeReaper runs periodic cleanup of expired envelope metadata.
+// Unlike the legacy ExpiryReaper, this uses batch deletion in a single
+// transaction for efficiency and processes the new envelope storage format.
 type EnvelopeReaper struct {
 	db          EnvelopeExpiryStore
 	interval    time.Duration
@@ -159,32 +161,15 @@ func (r *EnvelopeReaper) reapBatch(ctx context.Context) (int, bool) {
 
 	r.logger.Debug("reaping expired envelopes", "count", len(expired))
 
-	deleted := 0
-	hadError := false
-	for _, entry := range expired {
-		select {
-		case <-ctx.Done():
-			return deleted, false
-		default:
-		}
-
-		removed, err := r.db.DeleteExpiredEnvelope(ctx, entry)
-		if err != nil {
-			hadError = true
-			r.logger.Error("failed to delete expired envelope",
-				"protocol", entry.Protocol,
-				"kind", entry.Kind,
-				"key", entry.Key,
-				"error", err)
-			continue
-		}
-		if removed {
-			deleted++
-		}
+	if err := r.db.DeleteExpiredEnvelopes(ctx, expired); err != nil {
+		r.logger.Error("failed to batch delete expired envelopes",
+			"error", err,
+			"count", len(expired))
+		return 0, false
 	}
 
-	hasMore := !hadError && len(expired) == r.batchSize
-	return deleted, hasMore
+	hasMore := len(expired) == r.batchSize
+	return len(expired), hasMore
 }
 
 // ReapNow runs a single reap cycle immediately.

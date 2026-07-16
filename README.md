@@ -449,13 +449,6 @@ Point clients at `http://host/httpcache/`.
 | `--s3fifo-check-interval` | `S3FIFO_CHECK_INTERVAL` | `30s` | How often to run the S3-FIFO size-eviction safety check |
 | `--gc-startup-delay` | `GC_STARTUP_DELAY` | `5m` | Delay before first GC run after startup |
 
-### Metadata Storage
-
-| Flag | Environment Variable | Default | Description |
-|------|---------------------|---------|-------------|
-| `--metadata-batch-size` | `METADATA_BATCH_SIZE` | `100` | Maximum callbacks combined in one bbolt write transaction |
-| `--metadata-batch-delay` | `METADATA_BATCH_DELAY` | `10ms` | Maximum time to wait for a bbolt write batch to fill |
-
 ### Logging Options
 
 | Flag | Environment Variable | Default | Description |
@@ -774,10 +767,6 @@ content-cache exports OpenTelemetry metrics for monitoring cache effectiveness.
 | `content_cache_http_requests_total` | Counter | Total requests by protocol, endpoint, cache_result, status |
 | `content_cache_http_response_bytes_total` | Counter | Bytes served by protocol, endpoint, cache_result, status |
 | `content_cache_http_request_duration_seconds` | Histogram | Request latency by protocol, endpoint, cache_result, status |
-| `content_cache_metadb_batch_duration_seconds` | Histogram | bbolt batch latency by operation, outcome, and total/callback phase |
-| `content_cache_metadb_last_write_transaction_id` | Gauge | Last observed committed bbolt write transaction ID |
-| `content_cache_metadb_write_calls` | Gauge | Cumulative bbolt file write calls |
-| `content_cache_metadb_write_time_seconds` | Gauge | Cumulative time bbolt spent writing to disk |
 
 ### Labels
 

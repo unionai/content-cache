@@ -3,13 +3,10 @@
 package s3fifo
 
 import (
-	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 )
 
@@ -37,6 +34,7 @@ var (
 // Implementations must be safe to call concurrently.
 type Queues interface {
 	PushHead(queue, hash string) (bool, error)
+	PushHeadBatched(queue, hash string) (bool, error)
 	PopTail(queue string) (string, error)
 	Remove(queue, hash string) (bool, error)
 	Len(queue string) (int, error)
@@ -63,30 +61,6 @@ func NewBoltQueues(db *bbolt.DB) (*BoltQueues, error) {
 	return q, q.createBuckets()
 }
 
-func (q *BoltQueues) batch(operation string, fn func(*bbolt.Tx) error) error {
-	ctx := context.Background()
-	start := time.Now()
-	var callbackDuration time.Duration
-	var txID int
-	err := q.db.Batch(func(tx *bbolt.Tx) error {
-		callbackStart := time.Now()
-		txID = tx.ID()
-		err := fn(tx)
-		callbackDuration += time.Since(callbackStart)
-		return err
-	})
-	outcome := "success"
-	if err != nil {
-		outcome = "error"
-	}
-	telemetry.RecordMetaDBBatch(ctx, operation, outcome, time.Since(start), callbackDuration)
-	if err == nil {
-		stats := q.db.Stats()
-		telemetry.UpdateMetaDBStats(ctx, int64(txID), stats.TxStats.GetWrite(), stats.TxStats.GetWriteTime())
-	}
-	return err
-}
-
 func (q *BoltQueues) createBuckets() error {
 	return q.db.Update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{
@@ -106,7 +80,19 @@ func (q *BoltQueues) createBuckets() error {
 // Subsequent PopTail calls return older entries first.
 func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
 	var replaced bool
-	err := q.batch("s3fifo_push_head", func(tx *bbolt.Tx) error {
+	err := q.db.Update(func(tx *bbolt.Tx) error {
+		var err error
+		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
+		return err
+	})
+	return replaced, err
+}
+
+// PushHeadBatched is the admission-path variant of PushHead. Concurrent calls
+// share one bbolt write transaction and therefore one durability sync.
+func (q *BoltQueues) PushHeadBatched(queue, hash string) (bool, error) {
+	var replaced bool
+	err := q.db.Batch(func(tx *bbolt.Tx) error {
 		var err error
 		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
 		return err
@@ -118,7 +104,7 @@ func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
 // Returns ErrQueueEmpty when the queue has no entries.
 func (q *BoltQueues) PopTail(queue string) (string, error) {
 	var hash string
-	err := q.batch("s3fifo_pop_tail", func(tx *bbolt.Tx) error {
+	err := q.db.Update(func(tx *bbolt.Tx) error {
 		var err error
 		hash, err = txPopTail(tx, queueFwdName(queue), queueRevName(queue))
 		return err
@@ -130,8 +116,7 @@ func (q *BoltQueues) PopTail(queue string) (string, error) {
 // Returns (true, nil) if the hash was present and removed, (false, nil) if absent.
 func (q *BoltQueues) Remove(queue, hash string) (bool, error) {
 	var removed bool
-	err := q.batch("s3fifo_remove", func(tx *bbolt.Tx) error {
-		removed = false
+	err := q.db.Update(func(tx *bbolt.Tx) error {
 		fwd := tx.Bucket(queueFwdName(queue))
 		rev := tx.Bucket(queueRevName(queue))
 
@@ -184,7 +169,7 @@ func (q *BoltQueues) ForEach(queue string, fn func(hash string) error) error {
 // concurrent admissions can observe the same ghost entry before the batch runs.
 func (q *BoltQueues) AdmitGhostHit(hash string) (bool, error) {
 	var admitted bool
-	err := q.batch("s3fifo_ghost_hit", func(tx *bbolt.Tx) error {
+	err := q.db.Batch(func(tx *bbolt.Tx) error {
 		admitted = false
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
@@ -226,7 +211,7 @@ func (q *BoltQueues) GhostContains(hash string) (bool, error) {
 
 // GhostAdd inserts hash into the ghost set with the next sequence number.
 func (q *BoltQueues) GhostAdd(hash string) error {
-	return q.batch("s3fifo_ghost_add", func(tx *bbolt.Tx) error {
+	return q.db.Update(func(tx *bbolt.Tx) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 
@@ -253,7 +238,7 @@ func (q *BoltQueues) GhostAdd(hash string) error {
 
 // GhostRemove removes hash from the ghost set. No-op if not present.
 func (q *BoltQueues) GhostRemove(hash string) error {
-	return q.batch("s3fifo_ghost_remove", func(tx *bbolt.Tx) error {
+	return q.db.Update(func(tx *bbolt.Tx) error {
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)
 

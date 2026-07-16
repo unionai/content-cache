@@ -63,11 +63,6 @@ type Metrics struct {
 	buildCacheUploadsTotal    metric.Int64Counter
 	buildCacheUploadsInflight metric.Int64UpDownCounter
 
-	metaDBBatchDuration        metric.Float64Histogram
-	metaDBLastWriteTransaction metric.Int64Gauge
-	metaDBWriteCalls           metric.Int64Gauge
-	metaDBWriteTime            metric.Float64Gauge
-
 	backendRequestDuration metric.Float64Histogram
 	backendRequestsTotal   metric.Int64Counter
 	backendBytesTotal      metric.Int64Counter
@@ -295,43 +290,6 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 		"content_cache_buildcache_uploads_inflight",
 		metric.WithDescription("Current build cache leader uploads registered in memory"),
 		metric.WithUnit("{upload}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	metaDBBatchDuration, err := meter.Float64Histogram(
-		"content_cache_metadb_batch_duration_seconds",
-		metric.WithDescription("bbolt batch duration by operation and phase"),
-		metric.WithUnit("s"),
-		metric.WithExplicitBucketBoundaries(0.0001, 0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1),
-	)
-	if err != nil {
-		return err
-	}
-
-	metaDBLastWriteTransaction, err := meter.Int64Gauge(
-		"content_cache_metadb_last_write_transaction_id",
-		metric.WithDescription("Last observed committed bbolt write transaction ID"),
-		metric.WithUnit("{transaction}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	metaDBWriteCalls, err := meter.Int64Gauge(
-		"content_cache_metadb_write_calls",
-		metric.WithDescription("Cumulative bbolt file write calls"),
-		metric.WithUnit("{write}"),
-	)
-	if err != nil {
-		return err
-	}
-
-	metaDBWriteTime, err := meter.Float64Gauge(
-		"content_cache_metadb_write_time_seconds",
-		metric.WithDescription("Cumulative time bbolt spent writing to disk"),
-		metric.WithUnit("s"),
 	)
 	if err != nil {
 		return err
@@ -612,11 +570,6 @@ func doInitMetrics(ctx context.Context, cfg MetricsConfig) error {
 
 		buildCacheUploadsTotal:    buildCacheUploadsTotal,
 		buildCacheUploadsInflight: buildCacheUploadsInflight,
-
-		metaDBBatchDuration:        metaDBBatchDuration,
-		metaDBLastWriteTransaction: metaDBLastWriteTransaction,
-		metaDBWriteCalls:           metaDBWriteCalls,
-		metaDBWriteTime:            metaDBWriteTime,
 
 		backendRequestDuration: backendRequestDuration,
 		backendRequestsTotal:   backendRequestsTotal,
@@ -914,34 +867,6 @@ func AddBuildCacheUploadsInflight(ctx context.Context, delta int) {
 		return
 	}
 	globalMetrics.buildCacheUploadsInflight.Add(ctx, int64(delta))
-}
-
-// RecordMetaDBBatch records total caller latency and time spent executing the
-// callback inside a bbolt batch transaction.
-func RecordMetaDBBatch(ctx context.Context, operation, outcome string, total, callback time.Duration) {
-	if globalMetrics == nil {
-		return
-	}
-	attrs := []attribute.KeyValue{
-		attribute.String("operation", operation),
-		attribute.String("outcome", outcome),
-	}
-	globalMetrics.metaDBBatchDuration.Record(ctx, total.Seconds(), metric.WithAttributes(
-		append(attrs, attribute.String("phase", "total"))...,
-	))
-	globalMetrics.metaDBBatchDuration.Record(ctx, callback.Seconds(), metric.WithAttributes(
-		append(attrs, attribute.String("phase", "callback"))...,
-	))
-}
-
-// UpdateMetaDBStats publishes cumulative bbolt write statistics.
-func UpdateMetaDBStats(ctx context.Context, txID, writes int64, writeTime time.Duration) {
-	if globalMetrics == nil {
-		return
-	}
-	globalMetrics.metaDBLastWriteTransaction.Record(ctx, txID)
-	globalMetrics.metaDBWriteCalls.Record(ctx, writes)
-	globalMetrics.metaDBWriteTime.Record(ctx, writeTime.Seconds())
 }
 
 // RecordBlobTouch records a blob access count increment.
