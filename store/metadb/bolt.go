@@ -26,8 +26,8 @@ type BoltDB struct {
 }
 
 const (
-	defaultBatchSize  = 100
-	defaultBatchDelay = 10 * time.Millisecond
+	defaultBatchSize  = 1000
+	defaultBatchDelay = time.Millisecond
 )
 
 // BoltDBOption configures a BoltDB instance.
@@ -230,8 +230,8 @@ func (b *BoltDB) GetMeta(_ context.Context, protocol, key string) ([]byte, error
 }
 
 // PutMeta stores protocol metadata with TTL.
-func (b *BoltDB) PutMeta(ctx context.Context, protocol, key string, data []byte, ttl time.Duration) error {
-	return b.batch(ctx, "put_meta", func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutMeta(_ context.Context, protocol, key string, data []byte, ttl time.Duration) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return fmt.Errorf("meta bucket not found")
@@ -315,8 +315,8 @@ func (b *BoltDB) updateMetaExpiryIndex(tx *bbolt.Tx, protocol, key string, expir
 }
 
 // DeleteMeta removes protocol metadata.
-func (b *BoltDB) DeleteMeta(ctx context.Context, protocol, key string) error {
-	return b.batch(ctx, "delete_meta", func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteMeta(_ context.Context, protocol, key string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return nil
@@ -399,8 +399,8 @@ func (b *BoltDB) PutBlob(ctx context.Context, entry *BlobEntry) error {
 }
 
 // DeleteBlob removes blob metadata.
-func (b *BoltDB) DeleteBlob(ctx context.Context, hash string) error {
-	return b.batch(ctx, "delete_blob", func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteBlob(_ context.Context, hash string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return nil
@@ -412,7 +412,7 @@ func (b *BoltDB) DeleteBlob(ctx context.Context, hash string) error {
 
 // IncrementBlobRef increments the reference count for a blob.
 func (b *BoltDB) IncrementBlobRef(ctx context.Context, hash string) error {
-	return b.batch(ctx, "increment_blob_ref", func(tx *bbolt.Tx) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketBlobsByHash)
 		if bucket == nil {
 			return ErrNotFound
@@ -441,7 +441,7 @@ func (b *BoltDB) IncrementBlobRef(ctx context.Context, hash string) error {
 
 // DecrementBlobRef decrements the reference count for a blob.
 func (b *BoltDB) DecrementBlobRef(ctx context.Context, hash string) error {
-	return b.batch(ctx, "decrement_blob_ref", func(tx *bbolt.Tx) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		bucket := tx.Bucket(bucketBlobsByHash)
 		if bucket == nil {
 			return ErrNotFound
@@ -629,8 +629,8 @@ func (b *BoltDB) GetUnreferencedBlobs(_ context.Context, before time.Time, limit
 // - added = newRefs - oldRefs → increment blob refcounts
 // - removed = oldRefs - newRefs → decrement blob refcounts
 // This is safe for overwrites and idempotent for repeated calls with the same refs.
-func (b *BoltDB) PutMetaWithRefs(ctx context.Context, protocol, key string, data []byte, ttl time.Duration, refs []string) error {
-	return b.batch(ctx, "put_meta_with_refs", func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutMetaWithRefs(_ context.Context, protocol, key string, data []byte, ttl time.Duration, refs []string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		metaBucket := tx.Bucket(bucketMeta)
 		if metaBucket == nil {
 			return fmt.Errorf("meta bucket not found")
@@ -695,18 +695,17 @@ func (b *BoltDB) PutMetaWithRefs(ctx context.Context, protocol, key string, data
 }
 
 // DeleteMetaWithRefs removes metadata and decrements all associated blob refs.
-func (b *BoltDB) DeleteMetaWithRefs(ctx context.Context, protocol, key string) error {
-	return b.batch(ctx, "delete_meta_with_refs", func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteMetaWithRefs(_ context.Context, protocol, key string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		return b.deleteMetaWithRefsInTx(tx, protocol, key)
 	})
 }
 
 // DeleteExpiredMetaWithRefs removes an expired legacy metadata entry if the
 // current expiry index still matches the reaper's snapshot.
-func (b *BoltDB) DeleteExpiredMetaWithRefs(ctx context.Context, entry ExpiryEntry) (bool, error) {
+func (b *BoltDB) DeleteExpiredMetaWithRefs(_ context.Context, entry ExpiryEntry) (bool, error) {
 	deleted := false
-	err := b.batch(ctx, "delete_expired_meta", func(tx *bbolt.Tx) error {
-		deleted = false
+	err := b.db.Update(func(tx *bbolt.Tx) error {
 		if !b.metaExpiryMatchesInTx(tx, entry) {
 			return nil
 		}
@@ -1032,8 +1031,8 @@ func (b *BoltDB) GetEnvelope(_ context.Context, protocol, kind, key string) (*Me
 }
 
 // DeleteEnvelope removes a metadata envelope and decrements all associated blob refs.
-func (b *BoltDB) DeleteEnvelope(ctx context.Context, protocol, kind, key string) error {
-	return b.batch(ctx, "delete_envelope", func(tx *bbolt.Tx) error {
+func (b *BoltDB) DeleteEnvelope(_ context.Context, protocol, kind, key string) error {
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
 			return nil
@@ -1049,7 +1048,12 @@ func (b *BoltDB) DeleteEnvelope(ctx context.Context, protocol, kind, key string)
 			refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
 			for _, hash := range refs {
 				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-					return fmt.Errorf("decrementing ref for %s: %w", hash, err)
+					b.logger.Warn("failed to decrement blob ref during envelope delete",
+						"protocol", protocol,
+						"kind", kind,
+						"key", key,
+						"hash", hash,
+						"error", err)
 				}
 			}
 			if err := refsBucket.Delete(compoundKey); err != nil {
@@ -1297,56 +1301,60 @@ func (b *BoltDB) GetExpiredEnvelopes(_ context.Context, before time.Time, limit 
 	return entries, err
 }
 
-// DeleteExpiredEnvelope deletes an expired envelope if its expiry index still
-// matches the reaper's snapshot.
-func (b *BoltDB) DeleteExpiredEnvelope(ctx context.Context, entry EnvelopeExpiryEntry) (bool, error) {
-	deleted := false
-	err := b.batch(ctx, "delete_expired_envelope", func(tx *bbolt.Tx) error {
-		deleted = false
+// DeleteExpiredEnvelopes batch-deletes expired envelopes in a single transaction.
+func (b *BoltDB) DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeExpiryEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+
+	return b.db.Update(func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
 		blobsBucket := tx.Bucket(bucketBlobsByHash)
 		expiryBucket := tx.Bucket(bucketEnvelopeByExpiry)
 		reverseIndexBucket := tx.Bucket(bucketEnvelopeExpiryByKey)
 
-		compoundKey := makeEnvelopeKey(entry.Protocol, entry.Kind, entry.Key)
-		expectedExpiry := encodeTimestamp(entry.ExpiresAt)
+		for _, entry := range entries {
+			compoundKey := makeEnvelopeKey(entry.Protocol, entry.Kind, entry.Key)
+			expectedExpiry := encodeTimestamp(entry.ExpiresAt)
 
-		// Expired entries are selected in a separate read transaction. A request
-		// may refresh the same envelope before this delete transaction starts, so
-		// only delete when the current reverse index still matches the snapshot.
-		if reverseIndexBucket == nil || !bytes.Equal(reverseIndexBucket.Get(compoundKey), expectedExpiry) {
-			return nil
-		}
+			// Expired entries are selected in a separate read transaction. A request
+			// may refresh the same envelope before this delete transaction starts, so
+			// only delete when the current reverse index still matches the snapshot.
+			if reverseIndexBucket == nil || !bytes.Equal(reverseIndexBucket.Get(compoundKey), expectedExpiry) {
+				continue
+			}
 
-		if refsBucket != nil && blobsBucket != nil {
-			refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
-			for _, hash := range refs {
-				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-					return fmt.Errorf("decrementing ref for %s: %w", hash, err)
+			// Decrement blob refs
+			if refsBucket != nil && blobsBucket != nil {
+				refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
+				for _, hash := range refs {
+					if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
+						b.logger.Warn("failed to decrement blob ref during expiry delete",
+							"protocol", entry.Protocol,
+							"kind", entry.Kind,
+							"key", entry.Key,
+							"hash", hash,
+							"error", err)
+					}
 				}
+				_ = refsBucket.Delete(compoundKey)
 			}
-			if err := refsBucket.Delete(compoundKey); err != nil {
-				return fmt.Errorf("deleting envelope refs: %w", err)
-			}
-		}
 
-		if expiryBucket != nil {
-			expiryKey := makeEnvelopeExpiryKey(entry.ExpiresAt, entry.Protocol, entry.Kind, entry.Key)
-			if err := expiryBucket.Delete(expiryKey); err != nil {
-				return fmt.Errorf("deleting envelope expiry: %w", err)
+			// Delete expiry indexes
+			if expiryBucket != nil {
+				expiryKey := makeEnvelopeExpiryKey(entry.ExpiresAt, entry.Protocol, entry.Kind, entry.Key)
+				_ = expiryBucket.Delete(expiryKey)
+			}
+			if reverseIndexBucket != nil {
+				_ = reverseIndexBucket.Delete(compoundKey)
+			}
+
+			// Delete envelope
+			if envBucket != nil {
+				_ = envBucket.Delete(compoundKey)
 			}
 		}
-		if err := reverseIndexBucket.Delete(compoundKey); err != nil {
-			return fmt.Errorf("deleting envelope reverse expiry: %w", err)
-		}
-		if envBucket != nil {
-			if err := envBucket.Delete(compoundKey); err != nil {
-				return fmt.Errorf("deleting envelope: %w", err)
-			}
-		}
-		deleted = true
 		return nil
 	})
-	return deleted, err
 }

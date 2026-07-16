@@ -453,8 +453,8 @@ Point clients at `http://host/httpcache/`.
 
 | Flag | Environment Variable | Default | Description |
 |------|---------------------|---------|-------------|
-| `--metadata-batch-size` | `METADATA_BATCH_SIZE` | `100` | Maximum callbacks combined in one bbolt write transaction |
-| `--metadata-batch-delay` | `METADATA_BATCH_DELAY` | `10ms` | Maximum time to wait for a bbolt write batch to fill |
+| `--metadata-batch-size` | `METADATA_BATCH_SIZE` | `1000` | Maximum callbacks combined in one bbolt write transaction |
+| `--metadata-batch-delay` | `METADATA_BATCH_DELAY` | `1ms` | Maximum time to wait for a bbolt write batch to fill |
 
 ### Logging Options
 
