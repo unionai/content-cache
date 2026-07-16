@@ -3,10 +3,13 @@
 package s3fifo
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
+	"github.com/buildkite/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 )
 
@@ -61,6 +64,30 @@ func NewBoltQueues(db *bbolt.DB) (*BoltQueues, error) {
 	return q, q.createBuckets()
 }
 
+func (q *BoltQueues) batch(operation string, fn func(*bbolt.Tx) error) error {
+	ctx := context.Background()
+	start := time.Now()
+	var callbackDuration time.Duration
+	var txID int
+	err := q.db.Batch(func(tx *bbolt.Tx) error {
+		callbackStart := time.Now()
+		txID = tx.ID()
+		err := fn(tx)
+		callbackDuration += time.Since(callbackStart)
+		return err
+	})
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	telemetry.RecordMetaDBBatch(ctx, operation, outcome, time.Since(start), callbackDuration)
+	if err == nil {
+		stats := q.db.Stats()
+		telemetry.UpdateMetaDBStats(ctx, int64(txID), stats.TxStats.GetWrite(), stats.TxStats.GetWriteTime())
+	}
+	return err
+}
+
 func (q *BoltQueues) createBuckets() error {
 	return q.db.Update(func(tx *bbolt.Tx) error {
 		for _, name := range [][]byte{
@@ -92,7 +119,7 @@ func (q *BoltQueues) PushHead(queue, hash string) (bool, error) {
 // share one bbolt write transaction and therefore one durability sync.
 func (q *BoltQueues) PushHeadBatched(queue, hash string) (bool, error) {
 	var replaced bool
-	err := q.db.Batch(func(tx *bbolt.Tx) error {
+	err := q.batch("s3fifo_push_head", func(tx *bbolt.Tx) error {
 		var err error
 		replaced, err = txPushHead(tx, queueFwdName(queue), queueRevName(queue), hash)
 		return err
@@ -169,7 +196,7 @@ func (q *BoltQueues) ForEach(queue string, fn func(hash string) error) error {
 // concurrent admissions can observe the same ghost entry before the batch runs.
 func (q *BoltQueues) AdmitGhostHit(hash string) (bool, error) {
 	var admitted bool
-	err := q.db.Batch(func(tx *bbolt.Tx) error {
+	err := q.batch("s3fifo_ghost_hit", func(tx *bbolt.Tx) error {
 		admitted = false
 		ghostBucket := tx.Bucket(bucketGhost)
 		seqBucket := tx.Bucket(bucketGhostBySeq)

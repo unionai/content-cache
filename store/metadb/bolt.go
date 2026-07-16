@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/buildkite/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )
@@ -19,9 +20,15 @@ type BoltDB struct {
 	logger *slog.Logger
 	now    func() time.Time
 	noSync bool // disables fsync per transaction (for testing only)
+
+	batchSize  int
+	batchDelay time.Duration
 }
 
-const writeBatchDelay = time.Millisecond
+const (
+	defaultBatchSize  = 1000
+	defaultBatchDelay = time.Millisecond
+)
 
 // BoltDBOption configures a BoltDB instance.
 type BoltDBOption func(*BoltDB)
@@ -49,11 +56,31 @@ func WithNoSync(noSync bool) BoltDBOption {
 	}
 }
 
+// WithBatchSize sets the maximum number of callbacks in one bbolt batch.
+func WithBatchSize(size int) BoltDBOption {
+	return func(b *BoltDB) {
+		if size > 0 {
+			b.batchSize = size
+		}
+	}
+}
+
+// WithBatchDelay sets the maximum time bbolt waits before starting a batch.
+func WithBatchDelay(delay time.Duration) BoltDBOption {
+	return func(b *BoltDB) {
+		if delay > 0 {
+			b.batchDelay = delay
+		}
+	}
+}
+
 // NewBoltDB creates a new BoltDB instance with options.
 func NewBoltDB(opts ...BoltDBOption) *BoltDB {
 	b := &BoltDB{
-		logger: slog.Default(),
-		now:    time.Now,
+		logger:     slog.Default(),
+		now:        time.Now,
+		batchSize:  defaultBatchSize,
+		batchDelay: defaultBatchDelay,
 	}
 	for _, opt := range opts {
 		opt(b)
@@ -71,15 +98,14 @@ func (b *BoltDB) Open(path string) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	b.db = db
-	// Cache clients issue many small concurrent writes. A short batch window
-	// lets bbolt commit them with one durability sync without adding the
-	// library default 10ms delay to low-volume requests.
-	b.db.MaxBatchDelay = writeBatchDelay
+	b.db.MaxBatchSize = b.batchSize
+	b.db.MaxBatchDelay = b.batchDelay
 
 	if err := b.createBuckets(); err != nil {
 		_ = db.Close()
 		return err
 	}
+	b.recordStats(context.Background(), b.currentTxID())
 
 	// Initialize shared codec for envelope operations
 	codec, err := NewEnvelopeCodec()
@@ -91,6 +117,47 @@ func (b *BoltDB) Open(path string) error {
 
 	b.logger.Debug("opened metadb", "path", path, "noSync", b.noSync)
 	return nil
+}
+
+func (b *BoltDB) batch(ctx context.Context, operation string, fn func(*bbolt.Tx) error) error {
+	start := time.Now()
+	var callbackDuration time.Duration
+	var txID int
+	err := b.db.Batch(func(tx *bbolt.Tx) error {
+		callbackStart := time.Now()
+		txID = tx.ID()
+		err := fn(tx)
+		callbackDuration += time.Since(callbackStart)
+		return err
+	})
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	}
+	telemetry.RecordMetaDBBatch(ctx, operation, outcome, time.Since(start), callbackDuration)
+	if err == nil {
+		b.recordStats(ctx, txID)
+	}
+	return err
+}
+
+func (b *BoltDB) currentTxID() int {
+	var txID int
+	_ = b.db.View(func(tx *bbolt.Tx) error {
+		txID = tx.ID()
+		return nil
+	})
+	return txID
+}
+
+func (b *BoltDB) recordStats(ctx context.Context, txID int) {
+	stats := b.db.Stats()
+	telemetry.UpdateMetaDBStats(
+		ctx,
+		int64(txID),
+		stats.TxStats.GetWrite(),
+		stats.TxStats.GetWriteTime(),
+	)
 }
 
 func (b *BoltDB) createBuckets() error {
@@ -310,8 +377,8 @@ func (b *BoltDB) GetBlob(_ context.Context, hash string) (*BlobEntry, error) {
 }
 
 // PutBlob stores blob metadata.
-func (b *BoltDB) PutBlob(_ context.Context, entry *BlobEntry) error {
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+func (b *BoltDB) PutBlob(ctx context.Context, entry *BlobEntry) error {
+	return b.batch(ctx, "put_blob", func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return fmt.Errorf("blobs_by_hash bucket not found")
@@ -406,9 +473,9 @@ func (b *BoltDB) DecrementBlobRef(ctx context.Context, hash string) error {
 // TouchBlob updates the last access time for a blob and increments the access counter.
 // Returns the new access count (capped at 3 for S3-FIFO).
 // Returns (0, ErrNotFound) if the blob hash does not exist in the database.
-func (b *BoltDB) TouchBlob(_ context.Context, hash string) (int, error) {
+func (b *BoltDB) TouchBlob(ctx context.Context, hash string) (int, error) {
 	var newCount int
-	err := b.db.Batch(func(tx *bbolt.Tx) error {
+	err := b.batch(ctx, "touch_blob", func(tx *bbolt.Tx) error {
 		hashBucket := tx.Bucket(bucketBlobsByHash)
 		if hashBucket == nil {
 			return ErrNotFound
@@ -867,7 +934,7 @@ var _ MetaDB = (*BoltDB)(nil)
 // PutEnvelope stores a metadata envelope with blob reference tracking.
 // Handles transactional ref updates: computes diff between old and new refs,
 // increments new refs, decrements removed refs.
-func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env *MetadataEnvelope) error {
+func (b *BoltDB) PutEnvelope(ctx context.Context, protocol, kind, key string, env *MetadataEnvelope) error {
 	if err := ValidateEnvelope(env); err != nil {
 		return fmt.Errorf("validating envelope: %w", err)
 	}
@@ -881,7 +948,7 @@ func (b *BoltDB) PutEnvelope(_ context.Context, protocol, kind, key string, env 
 		return fmt.Errorf("marshaling envelope: %w", err)
 	}
 
-	return b.db.Batch(func(tx *bbolt.Tx) error {
+	return b.batch(ctx, "put_envelope", func(tx *bbolt.Tx) error {
 		envBucket := tx.Bucket(bucketEnvelopes)
 		if envBucket == nil {
 			return fmt.Errorf("envelopes bucket not found")
