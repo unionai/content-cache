@@ -5,11 +5,17 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +39,9 @@ func newTestRunner(t *testing.T, serverURL string) (*cacheprogRunner, *bytes.Buf
 }
 
 func TestHandleGetMiss(t *testing.T) {
+	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
 		http.NotFound(w, r)
 	}))
 	defer srv.Close()
@@ -44,6 +52,11 @@ func TestHandleGetMiss(t *testing.T) {
 
 	require.True(t, resp.Miss)
 	require.Equal(t, int64(1), resp.ID)
+
+	// An ordinary miss must not disable remote caching.
+	resp = runner.handleGet(t.Context(), progRequest{ID: 2, ActionID: actionID})
+	require.True(t, resp.Miss)
+	require.Equal(t, int32(2), requests.Load())
 }
 
 func TestHandleGetHit(t *testing.T) {
@@ -145,23 +158,161 @@ func TestHandlePutSuccess(t *testing.T) {
 	require.Equal(t, int64(len(body)), meta.Size)
 }
 
-func TestHandlePutUploadFailure(t *testing.T) {
+type cacheprogRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f cacheprogRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestRemoteFailureUsesLocalCache(t *testing.T) {
+	for _, operation := range []string{"get", "put"} {
+		for _, failure := range []string{"http_error", "connection_refused", "timeout"} {
+			t.Run(operation+"/"+failure, func(t *testing.T) {
+				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if failure == "timeout" {
+						_, _ = io.Copy(io.Discard, r.Body)
+						<-r.Context().Done()
+						return
+					}
+					http.Error(w, "server error", http.StatusInternalServerError)
+				}))
+				t.Cleanup(srv.Close)
+				if failure == "connection_refused" {
+					srv.Close()
+				}
+
+				runner, _ := newTestRunner(t, srv.URL)
+				if failure == "timeout" {
+					runner.httpClient.Timeout = 10 * time.Millisecond
+				}
+				var attempts atomic.Int32
+				runner.httpClient.Transport = cacheprogRoundTripper(func(req *http.Request) (*http.Response, error) {
+					attempts.Add(1)
+					return http.DefaultTransport.RoundTrip(req)
+				})
+				req := progRequest{ID: 1, ActionID: []byte("action"), OutputID: []byte("output")}
+				body := []byte("build artifact")
+				if operation == "get" {
+					resp := runner.handleGet(t.Context(), req)
+					require.Empty(t, resp.Err)
+					require.True(t, resp.Miss)
+				} else {
+					resp := runner.handlePut(t.Context(), req, body)
+					require.Empty(t, resp.Err)
+					data, err := os.ReadFile(resp.DiskPath)
+					require.NoError(t, err)
+					require.Equal(t, body, data)
+				}
+				require.Equal(t, int32(1), attempts.Load())
+
+				// All later requests use local storage without another network attempt.
+				put := runner.handlePut(t.Context(), req, body)
+				require.Empty(t, put.Err)
+				get := runner.handleGet(t.Context(), req)
+				require.Empty(t, get.Err)
+				require.False(t, get.Miss)
+				require.Equal(t, put.DiskPath, get.DiskPath)
+				require.Equal(t, req.OutputID, get.OutputID)
+				require.Equal(t, int64(len(body)), get.Size)
+				require.NotNil(t, get.Time)
+				data, err := os.ReadFile(get.DiskPath)
+				require.NoError(t, err)
+				require.Equal(t, body, data)
+				miss := runner.handleGet(t.Context(), progRequest{ID: 2, ActionID: []byte("missing")})
+				require.True(t, miss.Miss)
+				require.Empty(t, miss.Err)
+				require.Equal(t, int32(1), attempts.Load())
+			})
+		}
+	}
+}
+
+func TestHandleGetInterruptedDownloadDisablesRemote(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "server error", http.StatusInternalServerError)
+		w.Header().Set("X-Output-ID", "bb00000000000000000000000000000000000000000000000000000000000000")
+		w.Header().Set("Content-Length", "100")
+		_, _ = w.Write([]byte("truncated"))
 	}))
 	defer srv.Close()
-
 	runner, _ := newTestRunner(t, srv.URL)
-	actionID, _ := hex.DecodeString("aa00000000000000000000000000000000000000000000000000000000000000")
-	outputID, _ := hex.DecodeString("bb00000000000000000000000000000000000000000000000000000000000000")
+	resp := runner.handleGet(t.Context(), progRequest{ID: 1, ActionID: []byte("action")})
+	require.True(t, resp.Miss)
+	require.Empty(t, resp.Err)
+	require.True(t, runner.remoteDisabled.Load())
+	files, err := os.ReadDir(runner.localDir)
+	require.NoError(t, err)
+	require.Empty(t, files)
+}
 
-	resp := runner.handlePut(t.Context(), progRequest{
-		ID:       5,
-		ActionID: actionID,
-		OutputID: outputID,
-	}, []byte("data"))
+func TestHandlePutLocalFailure(t *testing.T) {
+	for _, failure := range []string{"create", "rename"} {
+		t.Run(failure, func(t *testing.T) {
+			runner, _ := newTestRunner(t, "http://unused")
+			req := progRequest{ID: 1, ActionID: []byte("action"), OutputID: []byte("output")}
+			if failure == "create" {
+				runner.localDir = filepath.Join(runner.localDir, "missing")
+			} else {
+				// A directory at the artifact path prevents the final rename.
+				require.NoError(t, os.Mkdir(filepath.Join(runner.localDir, hex.EncodeToString(req.ActionID)), 0o700))
+			}
+			var attempts atomic.Int32
+			runner.httpClient.Transport = cacheprogRoundTripper(func(req *http.Request) (*http.Response, error) {
+				attempts.Add(1)
+				return nil, errors.New("unexpected remote request")
+			})
+			resp := runner.handlePut(t.Context(), req, []byte("data"))
+			require.NotEmpty(t, resp.Err)
+			require.Empty(t, resp.DiskPath)
+			require.Zero(t, attempts.Load())
+		})
+	}
+}
 
-	require.Contains(t, resp.Err, "upload returned status 500")
+func TestConcurrentRemoteFailuresWarnOnce(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	runner, _ := newTestRunner(t, "http://unused")
+	const workers = 8
+	started := make(chan struct{}, workers)
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	t.Cleanup(releaseOnce)
+	runner.httpClient.Transport = cacheprogRoundTripper(func(req *http.Request) (*http.Response, error) {
+		started <- struct{}{}
+		<-release
+		return nil, errors.New("remote unavailable")
+	})
+	responses := make(chan progResponse, workers)
+	for i := range workers {
+		wg.Go(func() {
+			actionID := []byte(strconv.Itoa(i))
+			responses <- runner.handlePut(t.Context(), progRequest{
+				ID: int64(i + 1), ActionID: actionID, OutputID: actionID,
+			}, []byte("data"))
+		})
+	}
+	// Ensure all uploads are in flight before they fail together.
+	for range workers {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("uploads did not start")
+		}
+	}
+	releaseOnce()
+	wg.Wait()
+	close(responses)
+	for resp := range responses {
+		require.Empty(t, resp.Err)
+		data, err := os.ReadFile(resp.DiskPath)
+		require.NoError(t, err)
+		require.Equal(t, "data", string(data))
+	}
+	require.Equal(t, 1, strings.Count(logs.String(), "remote cache unavailable"))
 }
 
 func TestRunProtocol(t *testing.T) {

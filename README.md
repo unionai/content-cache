@@ -151,7 +151,7 @@ EOF
 
 # Use as a shared Go build cache (GOCACHEPROG)
 # The cacheprog subcommand implements the GOCACHEPROG protocol, backed by the server's /buildcache/ endpoint.
-# Artifacts are stored on the server and a local copy is kept for DiskPath responses.
+# Artifacts are saved locally first, then uploaded to the server when available.
 export GOCACHEPROG="content-cache cacheprog --server http://localhost:8080"
 go build ./...  # First build: artifacts uploaded to server
 go build ./...  # Subsequent builds on any machine: artifacts served from server cache
@@ -174,6 +174,25 @@ cargo build  # Subsequent builds: artifacts served from cache
 # }
 ./gradlew build  # Build outputs are stored in and served from the HTTP cache
 ```
+
+### Go cache server outages
+
+Go builds and tests can continue when the remote build cache is unavailable.
+The `cacheprog` client stores each artifact locally before uploading it. A failed
+upload still returns the local artifact to Go; a failed remote read is a cache
+miss, so Go rebuilds the artifact.
+
+After the first remote failure, the client logs one warning to stderr and skips
+further remote requests for that Go invocation. Requests already in flight keep
+the existing 30-second timeout. Ordinary HTTP 404 cache misses do not disable
+remote caching. The next Go invocation tries the server again; artifacts saved
+only locally during an outage are not automatically uploaded later.
+
+The local cache directory must remain writable. Errors that prevent storing a
+local artifact still fail the Go command. This fallback applies to Go's
+`GOCACHEPROG` build and test cache, independently of module downloads via
+`GOPROXY`. Deploy the updated client binary on build agents to get this behavior;
+updating only the cache server does not update clients.
 
 ## Performance
 

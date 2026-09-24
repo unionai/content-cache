@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -88,6 +90,16 @@ type cacheprogRunner struct {
 	enc        *json.Encoder
 	mu         sync.Mutex // guards enc and bw
 	cancel     context.CancelFunc
+
+	// A failed remote request disables further network requests for this Go
+	// invocation. In-flight requests remain bounded by the HTTP client timeout.
+	remoteDisabled atomic.Bool
+}
+
+func (r *cacheprogRunner) disableRemote(err error) {
+	if r.remoteDisabled.CompareAndSwap(false, true) {
+		slog.Warn("cacheprog: remote cache unavailable; using local cache for this invocation", "error", err)
+	}
 }
 
 func (r *cacheprogRunner) writeResponse(res progResponse) error {
@@ -194,16 +206,20 @@ func (r *cacheprogRunner) handleGet(ctx context.Context, req progRequest) progRe
 		}
 	}
 
+	if r.remoteDisabled.Load() {
+		return progResponse{ID: req.ID, Miss: true}
+	}
+
 	// Fetch from content-cache server.
 	url := r.serverURL + "/buildcache/" + actionHex
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cacheprog: creating get request %s: %v\n", actionHex, err)
+		r.disableRemote(fmt.Errorf("creating get request: %w", err))
 		return progResponse{ID: req.ID, Miss: true}
 	}
 	resp, err := r.httpClient.Do(httpReq)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cacheprog: get %s: %v\n", actionHex, err)
+		r.disableRemote(fmt.Errorf("getting blob: %w", err))
 		return progResponse{ID: req.ID, Miss: true}
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -212,14 +228,14 @@ func (r *cacheprogRunner) handleGet(ctx context.Context, req progRequest) progRe
 		return progResponse{ID: req.ID, Miss: true}
 	}
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "cacheprog: get %s: unexpected status %d\n", actionHex, resp.StatusCode)
+		r.disableRemote(fmt.Errorf("get returned status %d", resp.StatusCode))
 		return progResponse{ID: req.ID, Miss: true}
 	}
 
 	outputIDHex := resp.Header.Get("X-Output-ID")
 	outputIDBytes, err := hex.DecodeString(outputIDHex)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cacheprog: get %s: invalid X-Output-ID header: %v\n", actionHex, err)
+		r.disableRemote(fmt.Errorf("invalid X-Output-ID header: %w", err))
 		return progResponse{ID: req.ID, Miss: true}
 	}
 
@@ -235,7 +251,7 @@ func (r *cacheprogRunner) handleGet(ctx context.Context, req progRequest) progRe
 	_ = f.Close()
 	if err != nil {
 		_ = os.Remove(tmpPath)
-		fmt.Fprintf(os.Stderr, "cacheprog: writing %s: %v\n", actionHex, err)
+		r.disableRemote(fmt.Errorf("caching downloaded blob: %w", err))
 		return progResponse{ID: req.ID, Miss: true}
 	}
 
@@ -269,7 +285,8 @@ func (r *cacheprogRunner) handlePut(ctx context.Context, req progRequest, body [
 	localFile := filepath.Join(r.localDir, actionHex)
 	metaFile := localFile + ".meta"
 
-	// Write body to a temp file first so we can both upload it and rename it.
+	// Persist locally before attempting the optional remote upload. Go needs a
+	// usable DiskPath even when the remote cache is unavailable.
 	f, err := os.CreateTemp(r.localDir, "tmp-*")
 	if err != nil {
 		return progResponse{ID: req.ID, Err: fmt.Sprintf("creating temp file: %v", err)}
@@ -281,40 +298,49 @@ func (r *cacheprogRunner) handlePut(ctx context.Context, req progRequest, body [
 		_ = os.Remove(tmpPath)
 		return progResponse{ID: req.ID, Err: fmt.Sprintf("writing body: %v", err)}
 	}
-	_ = f.Close()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return progResponse{ID: req.ID, Err: fmt.Sprintf("closing blob: %v", err)}
+	}
+
+	if err := os.Rename(tmpPath, localFile); err != nil {
+		_ = os.Remove(tmpPath)
+		return progResponse{ID: req.ID, Err: fmt.Sprintf("renaming blob: %v", err)}
+	}
+	now := time.Now()
+	writeSidecar(metaFile, localMeta{OutputID: outputIDHex, Size: int64(len(body)), Time: &now})
+	res := progResponse{ID: req.ID, DiskPath: localFile}
+
+	if r.remoteDisabled.Load() {
+		return res
+	}
 
 	// Upload to content-cache server.
 	uploadURL := r.serverURL + "/buildcache/" + actionHex + "?output_id=" + outputIDHex
 	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(body))
 	if err != nil {
-		_ = os.Remove(tmpPath)
-		return progResponse{ID: req.ID, Err: fmt.Sprintf("creating upload request: %v", err)}
+		r.disableRemote(fmt.Errorf("creating upload request: %w", err))
+		return res
 	}
 	uploadReq.ContentLength = int64(len(body))
 
 	uploadResp, err := r.httpClient.Do(uploadReq)
 	if err != nil {
-		_ = os.Remove(tmpPath)
-		return progResponse{ID: req.ID, Err: fmt.Sprintf("uploading blob: %v", err)}
+		r.disableRemote(fmt.Errorf("uploading blob: %w", err))
+		return res
 	}
-	_, _ = io.Copy(io.Discard, uploadResp.Body)
-	_ = uploadResp.Body.Close()
+	defer func() { _ = uploadResp.Body.Close() }()
 
 	if uploadResp.StatusCode != http.StatusNoContent {
-		_ = os.Remove(tmpPath)
-		return progResponse{ID: req.ID, Err: fmt.Sprintf("upload returned status %d", uploadResp.StatusCode)}
+		r.disableRemote(fmt.Errorf("upload returned status %d", uploadResp.StatusCode))
+		return res
 	}
 
-	// Move temp file to its final local path.
-	if err := os.Rename(tmpPath, localFile); err != nil {
-		_ = os.Remove(tmpPath)
-		return progResponse{ID: req.ID, Err: fmt.Sprintf("renaming blob: %v", err)}
+	if _, err := io.Copy(io.Discard, uploadResp.Body); err != nil {
+		r.disableRemote(fmt.Errorf("reading upload response: %w", err))
 	}
 
-	now := time.Now()
-	writeSidecar(metaFile, localMeta{OutputID: outputIDHex, Size: int64(len(body)), Time: &now})
-
-	return progResponse{ID: req.ID, DiskPath: localFile}
+	return res
 }
 
 // writeSidecar stores metadata alongside the cached blob file.
