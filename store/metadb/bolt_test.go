@@ -25,8 +25,8 @@ func newTestBoltDB(t *testing.T, opts ...BoltDBOption) *BoltDB {
 
 func TestBoltDBBatchConfig(t *testing.T) {
 	defaultDB := newTestBoltDB(t)
-	require.Equal(t, 100, defaultDB.DB().MaxBatchSize)
-	require.Equal(t, 10*time.Millisecond, defaultDB.DB().MaxBatchDelay)
+	require.Equal(t, 1000, defaultDB.DB().MaxBatchSize)
+	require.Equal(t, time.Millisecond, defaultDB.DB().MaxBatchDelay)
 
 	db := newTestBoltDB(t, WithBatchSize(17), WithBatchDelay(23*time.Millisecond))
 	require.Equal(t, 17, db.DB().MaxBatchSize)

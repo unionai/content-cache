@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"go.etcd.io/bbolt"
 )
 
 func setupReaperTestDB(t *testing.T) *BoltDB {
@@ -124,6 +125,42 @@ func TestEnvelopeReaper_BatchProcessing(t *testing.T) {
 	stats := reaper.Stats()
 	require.Equal(t, 25, stats.LastReapCount)
 	require.Equal(t, int64(25), stats.TotalReaped)
+}
+
+func TestEnvelopeReaperDeletesEachBatchInSingleWriteTransaction(t *testing.T) {
+	db := setupReaperTestDB(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	for _, key := range []string{"a", "b", "c", "d"} {
+		require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", key, &MetadataEnvelope{
+			EnvelopeVersion: 1,
+			ContentType:     ContentType_CONTENT_TYPE_JSON,
+			Payload:         []byte(`{}`),
+			ExpiresAtUnixMs: now.Add(-time.Hour).UnixMilli(),
+		}))
+	}
+
+	transactionID := func() int {
+		t.Helper()
+		var id int
+		require.NoError(t, db.db.View(func(tx *bbolt.Tx) error {
+			id = tx.ID()
+			return nil
+		}))
+		return id
+	}
+
+	before := transactionID()
+	reaper := NewEnvelopeReaper(db,
+		WithEnvelopeReaperBatchSize(100),
+		WithEnvelopeReaperNow(func() time.Time { return now }),
+	)
+	require.Equal(t, 4, reaper.ReapNow(ctx))
+	after := transactionID()
+
+	require.Equal(t, 1, after-before,
+		"one reaper batch must commit in one write transaction")
 }
 
 func TestEnvelopeReaper_MaxDurationLimit(t *testing.T) {

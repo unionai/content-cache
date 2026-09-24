@@ -3,6 +3,7 @@ package s3fifo
 import (
 	"os"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/bbolt"
@@ -86,6 +87,31 @@ func TestPopTailEmptyQueue(t *testing.T) {
 	q := newTestQueues(t)
 	_, err := q.PopTail(QueueMain)
 	require.ErrorIs(t, err, ErrQueueEmpty)
+}
+
+func TestPopTailDoesNotWaitForRequestBatchWindow(t *testing.T) {
+	db := openTestDB(t)
+	q, err := NewBoltQueues(db)
+	require.NoError(t, err)
+
+	require.NoError(t, db.Update(func(tx *bbolt.Tx) error {
+		_, err := txPushHead(tx, bucketSmall, bucketSmallByHash, "oldest")
+		return err
+	}))
+
+	// Maintenance is serialized by Manager.queueMu, so it has no concurrent
+	// callers to coalesce. A long request batch window must not delay it.
+	db.MaxBatchDelay = 250 * time.Millisecond
+	db.MaxBatchSize = 100
+
+	start := time.Now()
+	got, err := q.PopTail(QueueSmall)
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	require.Equal(t, "oldest", got)
+	require.Less(t, elapsed, 100*time.Millisecond,
+		"serialized eviction maintenance must not wait for the request batching window")
 }
 
 func TestRemove(t *testing.T) {

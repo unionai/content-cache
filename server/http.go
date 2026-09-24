@@ -190,11 +190,11 @@ type Config struct {
 	MetadataDSN string
 
 	// MetadataBatchSize is the maximum number of callbacks in one bbolt batch.
-	// Default: 100.
+	// Default: 1000.
 	MetadataBatchSize int
 
 	// MetadataBatchDelay is the maximum time bbolt waits before starting a batch.
-	// Default: 10ms.
+	// Default: 1ms.
 	MetadataBatchDelay time.Duration
 
 	// Logger for the server
