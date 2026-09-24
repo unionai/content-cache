@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	httppprof "net/http/pprof"
@@ -97,12 +98,12 @@ func main() {
 
 func run() error {
 	var cli CLI
-	ctx := kong.Parse(&cli,
-		kong.Name("content-cache"),
-		kong.Description("A content-addressable cache server for Go modules, NPM packages, OCI images, PyPI, Maven, RubyGems, Git repositories, and direct download artefacts."),
-		kong.Vars{"version": version},
-		kong.UsageOnError(),
-	)
+	parser, err := newCLIParser(&cli, os.Args[1:], os.Stdout, os.Stderr)
+	if err != nil {
+		return err
+	}
+	ctx, err := parser.Parse(os.Args[1:])
+	parser.FatalIfErrorf(err)
 
 	switch ctx.Command() {
 	case "serve":
@@ -112,6 +113,24 @@ func run() error {
 	default:
 		return fmt.Errorf("unknown command: %s", ctx.Command())
 	}
+}
+
+func newCLIParser(cli *CLI, args []string, stdout, stderr io.Writer) (*kong.Kong, error) {
+	opts := []kong.Option{
+		kong.Name("content-cache"),
+		kong.Description("A content-addressable cache server for Go modules, NPM packages, OCI images, PyPI, Maven, RubyGems, Git repositories, and direct download artefacts."),
+		kong.Vars{"version": version},
+		kong.UsageOnError(),
+	}
+	if len(args) > 0 && args[0] == "cacheprog" {
+		// Kong reads environment variables for unselected commands too. A Go
+		// subprocess must not parse the parent job's server settings (LOG_LEVEL,
+		// TLS_CERT_FILE, etc.) or write help text to its JSON protocol stream.
+		opts = append(opts, kong.IgnoreFields(`^CLI\.Serve$`))
+		stdout = stderr
+	}
+	opts = append(opts, kong.Writers(stdout, stderr))
+	return kong.New(cli, opts...)
 }
 
 // Validate runs after kong has populated the struct and before Run. Catching
