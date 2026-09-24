@@ -175,6 +175,11 @@ cargo build  # Subsequent builds: artifacts served from cache
 ./gradlew build  # Build outputs are stored in and served from the HTTP cache
 ```
 
+The `cacheprog` subcommand reads `CONTENT_CACHE_SERVER` and
+`CONTENT_CACHE_LOCAL_DIR`. It ignores server configuration such as `LOG_LEVEL`,
+so a parent build can use its own logging settings. Client diagnostics and help
+go to stderr; stdout is reserved for Go's JSON cache protocol.
+
 ### Go cache server outages
 
 Go builds and tests can continue when the remote build cache is unavailable.

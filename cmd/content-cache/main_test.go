@@ -1,10 +1,113 @@
 package main
 
 import (
+	"bytes"
+	"io"
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestCLIParserCacheprogIgnoresServerEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"LOG_LEVEL", "5"},
+		{"LOG_FORMAT", "custom"},
+		{"CACHE_MAX_SIZE", "not-an-integer"},
+		{"METRICS_PROMETHEUS", "not-a-boolean"},
+		{"GC_INTERVAL", "not-a-duration"},
+		{"TLS_CERT_FILE", "/nonexistent/cacheprog-test-cert.pem"},
+		{"MAVEN_UPSTREAM", "invalid-url"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.name, tc.value)
+			t.Setenv("CONTENT_CACHE_SERVER", "http://cache.example:8080")
+			localDir := t.TempDir()
+			t.Setenv("CONTENT_CACHE_LOCAL_DIR", localDir)
+			var cli CLI
+			args := []string{"cacheprog"}
+			parser, err := newCLIParser(&cli, args, io.Discard, io.Discard)
+			require.NoError(t, err)
+			ctx, err := parser.Parse(args)
+			require.NoError(t, err)
+			require.Equal(t, "cacheprog", ctx.Command())
+			require.Equal(t, "http://cache.example:8080", cli.Cacheprog.Server)
+			require.Equal(t, localDir, cli.Cacheprog.LocalDir)
+		})
+	}
+}
+
+func TestCLIParserServeLogLevel(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		level   string
+		wantErr bool
+	}{
+		{"default server", nil, "debug", false},
+		{"explicit server", []string{"serve"}, "warn", false},
+		{"invalid default server", nil, "5", true},
+		{"invalid explicit server", []string{"serve"}, "5", true},
+		{"flag overrides environment", []string{"serve", "--log-level=error"}, "5", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOG_LEVEL", tc.level)
+			var cli CLI
+			parser, err := newCLIParser(&cli, tc.args, io.Discard, io.Discard)
+			require.NoError(t, err)
+			ctx, err := parser.Parse(tc.args)
+			if tc.wantErr {
+				require.ErrorContains(t, err, "--log-level must be one of")
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, "serve", ctx.Command())
+			if tc.name == "flag overrides environment" {
+				require.Equal(t, "error", cli.Serve.LogLevel)
+			} else {
+				require.Equal(t, tc.level, cli.Serve.LogLevel)
+			}
+		})
+	}
+}
+
+func TestCLIParserCacheprogDiagnosticsUseStderr(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		exit int
+	}{
+		{"help", []string{"cacheprog", "--help"}, 0},
+		{"missing server", []string{"cacheprog"}, 80},
+		{"invalid flag", []string{"cacheprog", "--unknown"}, 80},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LOG_LEVEL", "5")
+			t.Setenv("CONTENT_CACHE_SERVER", "")
+			require.NoError(t, os.Unsetenv("CONTENT_CACHE_SERVER"))
+			var cli CLI
+			var stdout, stderr bytes.Buffer
+			parser, err := newCLIParser(&cli, tc.args, &stdout, &stderr)
+			require.NoError(t, err)
+			parser.Exit = func(code int) {
+				require.Equal(t, tc.exit, code)
+				panic("CLI exit")
+			}
+			require.PanicsWithValue(t, "CLI exit", func() {
+				_, err := parser.Parse(tc.args)
+				parser.FatalIfErrorf(err)
+			})
+			require.Empty(t, stdout.String())
+			require.Contains(t, stderr.String(), "Usage: content-cache cacheprog")
+			if tc.name == "missing server" {
+				require.Contains(t, stderr.String(), "--server")
+			}
+		})
+	}
+}
 
 func TestServeCmdValidateMavenUpstream(t *testing.T) {
 	t.Parallel()
