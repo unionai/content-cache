@@ -180,6 +180,11 @@ The `cacheprog` subcommand reads `CONTENT_CACHE_SERVER` and
 so a parent build can use its own logging settings. Client diagnostics and help
 go to stderr; stdout is reserved for Go's JSON cache protocol.
 
+The client retains up to 64 idle HTTP connections per host for reuse between
+bursts of cache requests. It reads HTTP 404 response bodies before closing them
+so cache misses can reuse connections too. Connections are scoped to each
+client invocation, and requests retain the 30-second timeout.
+
 ### Go cache server outages
 
 Go builds and tests can continue when the remote build cache is unavailable.

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,10 +30,13 @@ func newTestRunner(t *testing.T, serverURL string) (*cacheprogRunner, *bytes.Buf
 	localDir := t.TempDir()
 	var buf bytes.Buffer
 	bw := bufio.NewWriter(&buf)
+	httpClient := newCacheprogHTTPClient()
+	httpClient.Timeout = 5 * time.Second
+	t.Cleanup(httpClient.CloseIdleConnections)
 	return &cacheprogRunner{
 		serverURL:  serverURL,
 		localDir:   localDir,
-		httpClient: &http.Client{Timeout: 5 * time.Second},
+		httpClient: httpClient,
 		bw:         bw,
 		enc:        json.NewEncoder(bw),
 	}, &buf
@@ -40,10 +44,17 @@ func newTestRunner(t *testing.T, serverURL string) (*cacheprogRunner, *bytes.Buf
 
 func TestHandleGetMiss(t *testing.T) {
 	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var connections atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		http.NotFound(w, r)
 	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	srv.Start()
 	defer srv.Close()
 
 	runner, _ := newTestRunner(t, srv.URL)
@@ -57,6 +68,64 @@ func TestHandleGetMiss(t *testing.T) {
 	resp = runner.handleGet(t.Context(), progRequest{ID: 2, ActionID: actionID})
 	require.True(t, resp.Miss)
 	require.Equal(t, int32(2), requests.Load())
+	require.Equal(t, int32(1), connections.Load(), "cache misses should reuse the connection")
+}
+
+func TestCacheprogReusesConnectionsAcrossBursts(t *testing.T) {
+	const workers = 8
+	started := make(chan struct{}, workers)
+	release := make(chan struct{}, workers)
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	var connections atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("X-Output-ID", "bb")
+		_, _ = w.Write([]byte("cached artifact"))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			connections.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	runner, _ := newTestRunner(t, srv.URL)
+	var wg sync.WaitGroup
+	t.Cleanup(wg.Wait)
+	t.Cleanup(releaseOnce)
+
+	for burst := range 2 {
+		responses := make(chan progResponse, workers)
+		for i := range workers {
+			wg.Go(func() {
+				actionID := []byte(strconv.Itoa(burst*workers + i))
+				responses <- runner.handleGet(t.Context(), progRequest{ActionID: actionID})
+			})
+		}
+		// Hold all responses until the entire burst has an active connection.
+		for range workers {
+			select {
+			case <-started:
+			case <-time.After(5 * time.Second):
+				t.Fatal("cache requests did not start")
+			}
+		}
+		for range workers {
+			release <- struct{}{}
+		}
+		wg.Wait()
+		close(responses)
+		for resp := range responses {
+			require.Empty(t, resp.Err)
+			require.False(t, resp.Miss)
+		}
+		require.Equal(t, int32(workers), connections.Load(), "the second burst should reuse the first burst's connections")
+	}
 }
 
 func TestHandleGetHit(t *testing.T) {
@@ -228,20 +297,25 @@ func TestRemoteFailureUsesLocalCache(t *testing.T) {
 }
 
 func TestHandleGetInterruptedDownloadDisablesRemote(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Output-ID", "bb00000000000000000000000000000000000000000000000000000000000000")
-		w.Header().Set("Content-Length", "100")
-		_, _ = w.Write([]byte("truncated"))
-	}))
-	defer srv.Close()
-	runner, _ := newTestRunner(t, srv.URL)
-	resp := runner.handleGet(t.Context(), progRequest{ID: 1, ActionID: []byte("action")})
-	require.True(t, resp.Miss)
-	require.Empty(t, resp.Err)
-	require.True(t, runner.remoteDisabled.Load())
-	files, err := os.ReadDir(runner.localDir)
-	require.NoError(t, err)
-	require.Empty(t, files)
+	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("X-Output-ID", "bb00000000000000000000000000000000000000000000000000000000000000")
+				w.Header().Set("Content-Length", "100")
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("truncated"))
+			}))
+			defer srv.Close()
+			runner, _ := newTestRunner(t, srv.URL)
+			resp := runner.handleGet(t.Context(), progRequest{ID: 1, ActionID: []byte("action")})
+			require.True(t, resp.Miss)
+			require.Empty(t, resp.Err)
+			require.True(t, runner.remoteDisabled.Load())
+			files, err := os.ReadDir(runner.localDir)
+			require.NoError(t, err)
+			require.Empty(t, files)
+		})
+	}
 }
 
 func TestHandlePutLocalFailure(t *testing.T) {

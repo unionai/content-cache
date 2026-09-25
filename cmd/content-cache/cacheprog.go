@@ -42,14 +42,23 @@ func (cmd *CacheprogCmd) Run() error {
 	}
 
 	bw := bufio.NewWriter(os.Stdout)
+	httpClient := newCacheprogHTTPClient()
+	defer httpClient.CloseIdleConnections()
 	r := &cacheprogRunner{
 		serverURL:  cmd.Server,
 		localDir:   localDir,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpClient,
 		bw:         bw,
 		enc:        json.NewEncoder(bw),
 	}
 	return r.run()
+}
+
+func newCacheprogHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Cache lookups arrive in bursts; retain their connections between bursts.
+	transport.MaxIdleConnsPerHost = 64
+	return &http.Client{Transport: transport, Timeout: 30 * time.Second}
 }
 
 // progRequest mirrors cmd/go/internal/cacheprog.ProgRequest.
@@ -225,6 +234,10 @@ func (r *cacheprogRunner) handleGet(ctx context.Context, req progRequest) progRe
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
+		// Read the miss body to EOF so the transport can reuse the connection.
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			r.disableRemote(fmt.Errorf("reading cache miss response: %w", err))
+		}
 		return progResponse{ID: req.ID, Miss: true}
 	}
 	if resp.StatusCode != http.StatusOK {
