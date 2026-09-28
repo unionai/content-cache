@@ -397,6 +397,24 @@ func TestBuildResourceFallbackAppliedWhenBaseEmpty(t *testing.T) {
 	require.Equal(t, "9.9.9", version)
 }
 
+func TestBuildResourcePreservesSDKSchema(t *testing.T) {
+	base, err := resource.New(t.Context(), resource.WithTelemetrySDK())
+	require.NoError(t, err)
+	require.NotEmpty(t, base.SchemaURL())
+
+	res, err := buildResourceFrom(base, MetricsConfig{ServiceName: "fallback-svc", ServiceVersion: "9.9.9"})
+	require.NoError(t, err)
+	require.Equal(t, base.SchemaURL(), res.SchemaURL())
+
+	name, ok := lookupAttr(res.Attributes(), "service.name")
+	require.True(t, ok)
+	require.Equal(t, "fallback-svc", name)
+
+	version, ok := lookupAttr(res.Attributes(), "service.version")
+	require.True(t, ok)
+	require.Equal(t, "9.9.9", version)
+}
+
 func TestBuildResourceEnvWinsOverFallback(t *testing.T) {
 	// Simulate a base resource populated by OTEL_SERVICE_NAME.
 	base := resource.NewSchemaless(semconv.ServiceName("env-svc"))

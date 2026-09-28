@@ -677,7 +677,8 @@ func buildResourceFrom(base *resource.Resource, cfg MetricsConfig) (*resource.Re
 	if len(fallbackAttrs) == 0 {
 		return base, nil
 	}
-	return resource.Merge(base, resource.NewWithAttributes(semconv.SchemaURL, fallbackAttrs...))
+	// Preserve the SDK resource's schema when adding fallback service attributes.
+	return resource.Merge(base, resource.NewSchemaless(fallbackAttrs...))
 }
 
 // hasResourceAttr reports whether the resource has a real value for key.
