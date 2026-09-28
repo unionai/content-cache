@@ -227,7 +227,7 @@ func TestAuthCacheConcurrency(t *testing.T) {
 	done := make(chan bool)
 
 	// Concurrent writes
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		go func(i int) {
 			ac.SetToken("scope", "token", 300)
 			done <- true
@@ -235,7 +235,7 @@ func TestAuthCacheConcurrency(t *testing.T) {
 	}
 
 	// Concurrent reads
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		go func() {
 			_ = ac.GetToken("scope")
 			done <- true
@@ -243,7 +243,7 @@ func TestAuthCacheConcurrency(t *testing.T) {
 	}
 
 	// Wait for all goroutines
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		select {
 		case <-done:
 		case <-time.After(time.Second):

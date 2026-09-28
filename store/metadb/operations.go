@@ -167,8 +167,8 @@ type EnvelopeDBStats struct {
 	ExpiredCount       int64            `json:"expired_count"`
 	TotalPayloadSize   int64            `json:"total_payload_size"`
 	CompressedCount    int64            `json:"compressed_count"`
-	OldestFetchedAt    time.Time        `json:"oldest_fetched_at,omitempty"`
-	NewestFetchedAt    time.Time        `json:"newest_fetched_at,omitempty"`
+	OldestFetchedAt    time.Time        `json:"oldest_fetched_at"`
+	NewestFetchedAt    time.Time        `json:"newest_fetched_at"`
 	ByProtocol         map[string]int64 `json:"by_protocol"`
 	ByKind             map[string]int64 `json:"by_kind"`
 	ByProtocolKind     map[string]int64 `json:"by_protocol_kind"`
@@ -262,12 +262,12 @@ type EnvelopeInspectResult struct {
 	CompressedSize   int       `json:"compressed_size,omitempty"`
 	CompressionRatio float64   `json:"compression_ratio,omitempty"`
 	PayloadDigest    string    `json:"payload_digest,omitempty"`
-	FetchedAt        time.Time `json:"fetched_at,omitempty"`
-	ExpiresAt        time.Time `json:"expires_at,omitempty"`
+	FetchedAt        time.Time `json:"fetched_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
 	TTLSeconds       int64     `json:"ttl_seconds,omitempty"`
 	IsExpired        bool      `json:"is_expired"`
 	Etag             string    `json:"etag,omitempty"`
-	LastModified     time.Time `json:"last_modified,omitempty"`
+	LastModified     time.Time `json:"last_modified"`
 	Upstream         string    `json:"upstream,omitempty"`
 	UpstreamStatus   uint32    `json:"upstream_status,omitempty"`
 	IsNegativeCache  bool      `json:"is_negative_cache"`

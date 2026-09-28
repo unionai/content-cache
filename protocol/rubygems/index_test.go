@@ -212,7 +212,7 @@ func TestIndexInfoLargeChecksums(t *testing.T) {
 	gem := "rails"
 
 	checksums := make(map[string]string)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		checksums[fmt.Sprintf("7.0.%d", i)] = strings.Repeat("a", 64)
 	}
 

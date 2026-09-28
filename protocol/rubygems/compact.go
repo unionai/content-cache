@@ -56,9 +56,9 @@ func ParseInfoChecksums(content []byte) map[string]string {
 
 		// Parse requirements: comma-separated key:value pairs
 		// Example: checksum:abc123,ruby:>=2.7,rubygems:>=3.0
-		for _, req := range strings.Split(requirements, ",") {
-			if strings.HasPrefix(req, "checksum:") {
-				checksum := strings.TrimPrefix(req, "checksum:")
+		for req := range strings.SplitSeq(requirements, ",") {
+			if after, ok := strings.CutPrefix(req, "checksum:"); ok {
+				checksum := after
 				checksums[versionPlatform] = checksum
 				break
 			}

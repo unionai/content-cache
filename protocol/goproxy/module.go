@@ -17,7 +17,7 @@ var ErrNotFound = errors.New("module not found")
 // This is the JSON format returned by the GOPROXY /@v/{version}.info endpoint.
 type VersionInfo struct {
 	Version string    `json:"Version"`
-	Time    time.Time `json:"Time,omitempty"`
+	Time    time.Time `json:"Time"`
 }
 
 // ModuleVersion contains all cached data for a specific module version.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -159,10 +160,8 @@ func (idx *Index) addVersion(ctx context.Context, modulePath, version string) er
 	}
 
 	// Check if version already exists
-	for _, v := range versions {
-		if v == version {
-			return nil
-		}
+	if slices.Contains(versions, version) {
+		return nil
 	}
 
 	versions = append(versions, version)

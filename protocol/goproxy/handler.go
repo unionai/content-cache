@@ -115,8 +115,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 
 	// Handle @latest endpoint
-	if strings.HasSuffix(path, "/@latest") {
-		modulePath := strings.TrimSuffix(path, "/@latest")
+	if before, ok := strings.CutSuffix(path, "/@latest"); ok {
+		modulePath := before
 		h.handleLatest(w, r, modulePath)
 		return
 	}

@@ -645,8 +645,8 @@ func extractVersionFromTarball(packageName, tarballName string) string {
 
 	// Tarball name format: {name}-{version}
 	prefix := simpleName + "-"
-	if strings.HasPrefix(tarballName, prefix) {
-		return strings.TrimPrefix(tarballName, prefix)
+	if after, ok := strings.CutPrefix(tarballName, prefix); ok {
+		return after
 	}
 
 	return ""

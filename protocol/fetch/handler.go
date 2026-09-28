@@ -536,7 +536,7 @@ func isNotModified(r *http.Request, entry *CachedResource) bool {
 
 func matchesIfNoneMatch(header, etag string) bool {
 	want := weakETag(etag)
-	for _, candidate := range strings.Split(header, ",") {
+	for candidate := range strings.SplitSeq(header, ",") {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "*" {
 			return true

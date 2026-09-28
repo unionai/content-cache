@@ -175,10 +175,7 @@ func TestBoltDB_BlobOperations(t *testing.T) {
 		for i := 1; i <= 4; i++ {
 			newCount, err := db.TouchBlob(ctx, "countblob")
 			require.NoError(t, err)
-			expected := i
-			if expected > 3 {
-				expected = 3
-			}
+			expected := min(i, 3)
 			assert.Equal(t, expected, newCount, "touch %d", i)
 		}
 
@@ -321,10 +318,10 @@ func TestBoltDB_ConcurrentAccess(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for j := range numOps {
 				protocol := "npm"
 				key := string(rune('a'+id)) + string(rune('0'+j%10)) //nolint:gosec // bounded: id < numGoroutines (10), j%10 < 10
 				data := []byte("data")
@@ -590,10 +587,10 @@ func TestBoltDB_UpdateJSON(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		for i := 0; i < numGoroutines; i++ {
+		for range numGoroutines {
 			go func() {
 				defer wg.Done()
-				for j := 0; j < numOps; j++ {
+				for range numOps {
 					var counter Counter
 					_ = db.UpdateJSON(ctx, "test", "counter", time.Hour, func(v any) error {
 						c := v.(*Counter)

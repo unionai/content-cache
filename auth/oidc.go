@@ -245,8 +245,8 @@ func claimMatches(actual, expected any) bool {
 
 	switch exp := expected.(type) {
 	case string:
-		if strings.HasSuffix(exp, "*") {
-			return strings.HasPrefix(actualStr, strings.TrimSuffix(exp, "*"))
+		if before, ok := strings.CutSuffix(exp, "*"); ok {
+			return strings.HasPrefix(actualStr, before)
 		}
 		return actualStr == exp
 	case []any:

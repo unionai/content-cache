@@ -1114,10 +1114,7 @@ func UpdateS3FIFOQueueState(ctx context.Context, smallBytes, mainBytes int64, sm
 	globalMetrics.s3fifoTargetBytes.Record(ctx, targetBytes)
 	globalMetrics.s3fifoCacheMaxSizeBytes.Record(ctx, maxBytes)
 	total := smallBytes + mainBytes
-	overlimit := total - maxBytes
-	if overlimit < 0 {
-		overlimit = 0
-	}
+	overlimit := max(total-maxBytes, 0)
 	globalMetrics.s3fifoOverlimitBytes.Record(ctx, overlimit)
 }
 

@@ -136,8 +136,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Handle root-level checksum files (e.g., /archetype-catalog.xml.sha1)
 	for _, checksumExt := range []string{".md5", ".sha1", ".sha256", ".sha512"} {
-		if strings.HasSuffix(path, checksumExt) {
-			baseFile := strings.TrimSuffix(path, checksumExt)
+		if before, ok := strings.CutSuffix(path, checksumExt); ok {
+			baseFile := before
 			if baseFile == "/archetype-catalog.xml" {
 				checksumType := strings.TrimPrefix(checksumExt, ".")
 				h.handleRootFileChecksum(w, r, "archetype-catalog.xml", checksumType)
@@ -775,15 +775,15 @@ func parseArtifactFilename(artifactID, version, filename string) (ArtifactCoordi
 	prefix := artifactID + "-" + version
 	remainder := ""
 
-	if strings.HasPrefix(filename, prefix) {
-		remainder = strings.TrimPrefix(filename, prefix)
-	} else if strings.HasSuffix(version, "-SNAPSHOT") {
+	if after, ok := strings.CutPrefix(filename, prefix); ok {
+		remainder = after
+	} else if before, ok := strings.CutSuffix(version, "-SNAPSHOT"); ok {
 		// Try snapshot timestamp format: artifactId-baseVersion-timestamp-buildNumber.ext
-		baseVersion := strings.TrimSuffix(version, "-SNAPSHOT")
+		baseVersion := before
 		snapshotPrefix := artifactID + "-" + baseVersion + "-"
-		if strings.HasPrefix(filename, snapshotPrefix) {
+		if after, ok := strings.CutPrefix(filename, snapshotPrefix); ok {
 			// Extract the rest and find the extension
-			rest := strings.TrimPrefix(filename, snapshotPrefix)
+			rest := after
 			// Format: YYYYMMDD.HHMMSS-buildNum[-classifier].ext
 			// Find the extension by looking for last dot after the timestamp pattern
 			if idx := findSnapshotExtensionIndex(rest); idx > 0 {
