@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
 )
 
 func TestDo_SingleCall(t *testing.T) {
@@ -110,15 +110,13 @@ func TestDo_CallerTimeout(t *testing.T) {
 
 	// Start a slow download
 	var slowWg sync.WaitGroup
-	slowWg.Add(1)
-	go func() {
-		defer slowWg.Done()
+	slowWg.Go(func() {
 		_, _, _ = d.Do(shortCtx, "timeout-key", func(ctx context.Context) (*Result, error) {
 			time.Sleep(200 * time.Millisecond)
 			downloadCompleted.Store(true)
 			return expected, nil
 		})
-	}()
+	})
 
 	// Wait for first caller to start the download
 	time.Sleep(5 * time.Millisecond)

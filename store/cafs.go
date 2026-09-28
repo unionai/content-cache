@@ -10,10 +10,10 @@ import (
 	"os"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/backend"
-	"github.com/buildkite/content-cache/store/metadb"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/backend"
+	"github.com/unionai/content-cache/store/metadb"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 // MetadataTracker tracks blob metadata for expiration.

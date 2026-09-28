@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/content-cache/protocol/git"
 	"github.com/stretchr/testify/require"
+	"github.com/unionai/content-cache/protocol/git"
 )
 
 func TestGitHubAppAuthPublicOptionsSupportExternalTests(t *testing.T) {

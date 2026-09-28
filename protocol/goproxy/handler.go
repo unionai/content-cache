@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/download"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/download"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (
@@ -115,8 +115,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 
 	// Handle @latest endpoint
-	if strings.HasSuffix(path, "/@latest") {
-		modulePath := strings.TrimSuffix(path, "/@latest")
+	if before, ok := strings.CutSuffix(path, "/@latest"); ok {
+		modulePath := before
 		h.handleLatest(w, r, modulePath)
 		return
 	}

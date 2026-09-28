@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/download"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/download"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (
@@ -645,8 +645,8 @@ func extractVersionFromTarball(packageName, tarballName string) string {
 
 	// Tarball name format: {name}-{version}
 	prefix := simpleName + "-"
-	if strings.HasPrefix(tarballName, prefix) {
-		return strings.TrimPrefix(tarballName, prefix)
+	if after, ok := strings.CutPrefix(tarballName, prefix); ok {
+		return after
 	}
 
 	return ""

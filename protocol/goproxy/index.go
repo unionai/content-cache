@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/store/metadb"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 // Index manages the module version index using metadb envelope storage.
@@ -159,10 +160,8 @@ func (idx *Index) addVersion(ctx context.Context, modulePath, version string) er
 	}
 
 	// Check if version already exists
-	for _, v := range versions {
-		if v == version {
-			return nil
-		}
+	if slices.Contains(versions, version) {
+		return nil
 	}
 
 	versions = append(versions, version)

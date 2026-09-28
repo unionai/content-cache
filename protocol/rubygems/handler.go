@@ -16,10 +16,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/download"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/download"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (
@@ -600,16 +600,14 @@ func (h *Handler) handleGemspec(w http.ResponseWriter, r *http.Request) {
 
 	// Hand off cleanup responsibility to goroutine
 	cleanupNeeded = false
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		defer func() { _ = os.Remove(tmpPath) }()
 
 		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheGemspec(cacheCtx, parsed, contentHash, written, tmpPath, logger)
-	}()
+	})
 }
 
 // handleGem handles /gems/{filename}.gem requests.
@@ -842,16 +840,14 @@ func (h *Handler) handleGemDirect(w http.ResponseWriter, r *http.Request, filena
 	_ = tmpFile.Close()
 
 	cleanupNeeded = false
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		defer func() { _ = os.Remove(tmpPath) }()
 
 		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheGem(cacheCtx, filename, parsed, contentHash, written, computedSHA256, tmpPath, logger)
-	}()
+	})
 }
 
 // lookupGemChecksum looks up the expected SHA256 for a gem from cached /info.
@@ -909,9 +905,7 @@ func (h *Handler) writeSpecs(w http.ResponseWriter, r *http.Request, content []b
 // Async caching helpers
 
 func (h *Handler) cacheVersionsAsync(meta *CachedVersions, content []byte, logger *slog.Logger) {
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
@@ -920,13 +914,11 @@ func (h *Handler) cacheVersionsAsync(meta *CachedVersions, content []byte, logge
 		} else {
 			logger.Debug("cached versions", "size", len(content))
 		}
-	}()
+	})
 }
 
 func (h *Handler) cacheInfoAsync(gem string, meta *CachedGemInfo, content []byte, logger *slog.Logger) {
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
@@ -935,13 +927,11 @@ func (h *Handler) cacheInfoAsync(gem string, meta *CachedGemInfo, content []byte
 		} else {
 			logger.Debug("cached info", "gem", gem, "size", len(content))
 		}
-	}()
+	})
 }
 
 func (h *Handler) cacheSpecsAsync(specsType string, meta *CachedSpecs, content []byte, logger *slog.Logger) {
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		ctx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
@@ -950,7 +940,7 @@ func (h *Handler) cacheSpecsAsync(specsType string, meta *CachedSpecs, content [
 		} else {
 			logger.Debug("cached specs", "type", specsType, "size", len(content))
 		}
-	}()
+	})
 }
 
 func (h *Handler) cacheGemspec(ctx context.Context, parsed *ParsedGemFilename, hash contentcache.Hash, size int64, tmpPath string, logger *slog.Logger) {

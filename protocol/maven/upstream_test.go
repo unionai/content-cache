@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 func TestGroupIDToPath(t *testing.T) {
@@ -421,7 +421,7 @@ func TestUpstreamNegativeCache(t *testing.T) {
 		WithNegativeCacheStore(newTestNegCacheStore(t)),
 	)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		data, err := u.FetchMetadataRaw(context.Background(), "org.example", "test")
 		require.NoError(t, err)
 		require.Equal(t, "hit", string(data))
@@ -448,7 +448,7 @@ func TestUpstreamNoCacheWithoutStore(t *testing.T) {
 
 	u := NewUpstream(WithRepositoryURLs(primary.URL, secondary.URL))
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, err := u.FetchMetadataRaw(context.Background(), "org.example", "test")
 		require.NoError(t, err)
 	}

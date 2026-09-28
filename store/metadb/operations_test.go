@@ -316,7 +316,7 @@ func TestCompactDB(t *testing.T) {
 	db := setupOperationsTestDB(t)
 	ctx := context.Background()
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		env := &MetadataEnvelope{
 			EnvelopeVersion: 1,
 			Payload:         []byte(`{"data":"` + string(rune('a'+i%26)) + `"}`),
@@ -324,7 +324,7 @@ func TestCompactDB(t *testing.T) {
 		require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", string(rune('a'+i%26))+string(rune('0'+i/26)), env))
 	}
 
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		require.NoError(t, db.DeleteEnvelope(ctx, "npm", "metadata", string(rune('a'+i%26))+string(rune('0'+i/26))))
 	}
 

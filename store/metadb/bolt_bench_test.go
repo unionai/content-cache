@@ -23,7 +23,7 @@ func BenchmarkPutMetaUpdate(b *testing.B) {
 			ctx := context.Background()
 
 			// Pre-populate
-			for i := 0; i < n; i++ {
+			for i := range n {
 				key := fmt.Sprintf("pkg-%d", i)
 				if err := db.PutMeta(ctx, "npm", key, []byte("data"), time.Hour); err != nil {
 					b.Fatal(err)
@@ -57,7 +57,7 @@ func BenchmarkTouchBlobUpdate(b *testing.B) {
 			ctx := context.Background()
 
 			// Pre-populate
-			for i := 0; i < n; i++ {
+			for i := range n {
 				currentTime = baseTime.Add(time.Duration(i) * time.Minute)
 				hash := fmt.Sprintf("hash-%d", i)
 				entry := &BlobEntry{

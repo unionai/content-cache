@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/buildkite/content-cache/backend"
-	"github.com/buildkite/content-cache/store/metadb"
+	"github.com/unionai/content-cache/backend"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 // Config configures the GC manager.

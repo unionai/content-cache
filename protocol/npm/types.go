@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // PackageMetadata represents the full metadata for an NPM package.
@@ -112,7 +112,7 @@ type AbbreviatedMetadata struct {
 	Name     string                         `json:"name"`
 	DistTags map[string]string              `json:"dist-tags,omitempty"`
 	Versions map[string]*AbbreviatedVersion `json:"versions,omitempty"`
-	Modified time.Time                      `json:"modified,omitempty"`
+	Modified time.Time                      `json:"modified"`
 }
 
 // AbbreviatedVersion is minimal version metadata.

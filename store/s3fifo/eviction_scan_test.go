@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
 )
 
 type observingEvictionContext struct {

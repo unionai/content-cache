@@ -75,9 +75,9 @@ func TestMetaExpiryIndex_SingleEntryAfterRepeatedUpdates(t *testing.T) {
 	compoundKey := makeProtocolKey(protocol, key)
 
 	// Put the same meta key 10 times with different TTLs
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		ttl := time.Duration(i+1) * time.Hour
-		data := []byte(fmt.Sprintf(`{"version":%d}`, i))
+		data := fmt.Appendf(nil, `{"version":%d}`, i)
 		require.NoError(t, db.PutMeta(ctx, protocol, key, data, ttl))
 		// Advance time slightly to ensure different expiry timestamps
 		currentTime = currentTime.Add(time.Minute)

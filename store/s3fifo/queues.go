@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 )
 

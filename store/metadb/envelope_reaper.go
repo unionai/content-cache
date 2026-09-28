@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 // EnvelopeReaper runs periodic cleanup of expired envelope metadata.

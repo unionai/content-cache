@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/buildkite/content-cache/credentials"
+	"github.com/unionai/content-cache/credentials"
 )
 
 // SSMClient is the interface for AWS SSM Parameter Store operations.

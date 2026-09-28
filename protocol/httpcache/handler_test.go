@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/buildkite/content-cache/backend"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
+	"github.com/unionai/content-cache/backend"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 func newTestHandler(t *testing.T) (*Handler, *Index, store.Store) {

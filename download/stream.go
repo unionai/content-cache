@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // StreamThroughOptions configures a stream-through operation.

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // DefaultUpstreamURL is the default RubyGems.org URL.

@@ -133,13 +133,13 @@ func splitParams(s string) []string {
 
 // parseParam parses a key="value" parameter.
 func parseParam(s string) (key, value string, ok bool) {
-	idx := strings.Index(s, "=")
-	if idx < 0 {
+	before, after, ok0 := strings.Cut(s, "=")
+	if !ok0 {
 		return "", "", false
 	}
 
-	key = strings.TrimSpace(s[:idx])
-	value = strings.TrimSpace(s[idx+1:])
+	key = strings.TrimSpace(before)
+	value = strings.TrimSpace(after)
 
 	// Remove surrounding quotes
 	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {

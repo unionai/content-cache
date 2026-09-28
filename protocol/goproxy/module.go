@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // ErrNotFound is returned when a module or version is not found.
@@ -17,7 +17,7 @@ var ErrNotFound = errors.New("module not found")
 // This is the JSON format returned by the GOPROXY /@v/{version}.info endpoint.
 type VersionInfo struct {
 	Version string    `json:"Version"`
-	Time    time.Time `json:"Time,omitempty"`
+	Time    time.Time `json:"Time"`
 }
 
 // ModuleVersion contains all cached data for a specific module version.

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/store/metadb"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 // Index manages the PyPI package index using metadb envelope storage.

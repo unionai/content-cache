@@ -7,7 +7,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 // InstrumentedBackend wraps a Backend with metrics recording.

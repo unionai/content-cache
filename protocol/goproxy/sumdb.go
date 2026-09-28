@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/store/metadb"
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/store/metadb"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (

@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/telemetry"
 	"golang.org/x/sync/singleflight"
 )
 

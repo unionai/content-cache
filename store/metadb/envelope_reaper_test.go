@@ -99,7 +99,7 @@ func TestEnvelopeReaper_BatchProcessing(t *testing.T) {
 
 	now := time.Now()
 
-	for i := 0; i < 25; i++ {
+	for i := range 25 {
 		env := &MetadataEnvelope{
 			EnvelopeVersion: 1,
 			ContentType:     ContentType_CONTENT_TYPE_JSON,
@@ -132,7 +132,7 @@ func TestEnvelopeReaper_MaxDurationLimit(t *testing.T) {
 
 	now := time.Now()
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		env := &MetadataEnvelope{
 			EnvelopeVersion: 1,
 			ContentType:     ContentType_CONTENT_TYPE_JSON,

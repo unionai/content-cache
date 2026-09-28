@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/backend"
-	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/backend"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 // testRawHex pads a short seed to a 64-char hex string (no algorithm prefix).

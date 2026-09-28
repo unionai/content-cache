@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/buildkite/content-cache/auth"
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/auth"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 // authMiddleware returns middleware that validates inbound authentication.

@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/download"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/download"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (
@@ -288,13 +288,11 @@ func (h *Handler) handleGetManifest(w http.ResponseWriter, r *http.Request, rr r
 	// Cache asynchronously (uses indexName for tag scoping)
 	indexName := rr.IndexName
 	reference := rr.Reference
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 		h.cacheManifest(cacheCtx, indexName, reference, upstreamDigest, mediaType, content, logger)
-	}()
+	})
 }
 
 // handleHeadManifest handles HEAD /v2/{prefix}/{name}/manifests/{reference} requests.
@@ -526,13 +524,11 @@ func (h *Handler) handleGetBlobDirect(w http.ResponseWriter, r *http.Request, up
 			logger.Debug("digest verified", "digest", digestStr)
 
 			// Store in CAFS async — caller owns tmpPath deletion.
-			h.wg.Add(1)
-			go func() {
-				defer h.wg.Done()
+			h.wg.Go(func() {
 				cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 				defer cancel()
 				h.cacheBlob(cacheCtx, digestStr, result.Hash, result.Size, tmpPath, logger)
-			}()
+			})
 			return nil
 		},
 		logger,

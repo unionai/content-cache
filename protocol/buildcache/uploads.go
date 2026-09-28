@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 type uploadKey struct {

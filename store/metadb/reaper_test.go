@@ -61,7 +61,7 @@ func TestExpiryReaper(t *testing.T) {
 		db := newTestBoltDB(t, WithNow(func() time.Time { return currentTime }))
 
 		// Put multiple entries with short TTL
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := "pkg" + string(rune('0'+i))
 			require.NoError(t, db.PutMeta(ctx, "npm", key, []byte(`{}`), 5*time.Minute))
 		}

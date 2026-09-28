@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
 )
 
 func testLogger() *slog.Logger {
@@ -278,7 +278,7 @@ func TestStreamThrough_Concurrent(t *testing.T) {
 	errs := make(chan error, goroutines)
 	for i := range goroutines {
 		go func() {
-			content := []byte(fmt.Sprintf("concurrent content %d", i))
+			content := fmt.Appendf(nil, "concurrent content %d", i)
 
 			r := httptest.NewRequest(http.MethodGet, "/blob", nil)
 			w := httptest.NewRecorder()

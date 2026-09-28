@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/download"
-	"github.com/buildkite/content-cache/store"
-	"github.com/buildkite/content-cache/telemetry"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/download"
+	"github.com/unionai/content-cache/store"
+	"github.com/unionai/content-cache/telemetry"
 )
 
 const (
@@ -134,8 +134,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Route: /simple/{project}/ - project page
-	if strings.HasPrefix(path, "/simple/") {
-		projectPath := strings.TrimPrefix(path, "/simple/")
+	if after, ok := strings.CutPrefix(path, "/simple/"); ok {
+		projectPath := after
 		projectPath = strings.TrimSuffix(projectPath, "/")
 
 		// Redirect if missing trailing slash
@@ -259,9 +259,7 @@ func (h *Handler) handleProject(w http.ResponseWriter, r *http.Request, project 
 	}
 
 	// Cache metadata asynchronously
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 		if err := h.index.PutCachedProject(cacheCtx, cached); err != nil {
@@ -269,7 +267,7 @@ func (h *Handler) handleProject(w http.ResponseWriter, r *http.Request, project 
 		} else {
 			logger.Debug("cached project metadata")
 		}
-	}()
+	})
 
 	h.writeProjectResponse(w, r, cached, normalized)
 }
@@ -537,16 +535,14 @@ func (h *Handler) handleFileDirect(w http.ResponseWriter, r *http.Request, proje
 	}
 	fileHashes["sha256"] = computedSha256
 
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
+	h.wg.Go(func() {
 		defer func() { _ = os.Remove(tmpPath) }()
 
 		cacheCtx, cancel := context.WithTimeout(h.ctx, cacheTimeout)
 		defer cancel()
 
 		h.cacheFile(cacheCtx, project, filename, contentHash, size, fileHashes, upstreamURL, requiresPython, tmpPath, logger)
-	}()
+	})
 }
 
 // cacheFile stores a file in the cache from a temp file.
