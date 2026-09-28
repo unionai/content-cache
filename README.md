@@ -33,6 +33,8 @@ The ghost set stores only hashes (32 bytes each), not blob data. Its size is aut
 
 Size eviction activates automatically when `--cache-max-size` is set. The GC continues to run in parallel and handles TTL expiry, unreferenced blobs, and orphan cleanup — S3-FIFO handles only the size limit.
 
+Eviction releases the queue lock between candidates so uploads and GC removals can proceed during long scans of pinned blobs (blobs still referenced by cache entries). Each candidate is checked against the current capacity and queue sizes. A scan is bounded by its starting queue length; if all candidates are pinned, the cache may temporarily exceed its size limit until a later admission or periodic check retries eviction.
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--cache-max-size` | `10737418240` (10 GB) | Total byte limit for cached blobs. Set to `0` to disable size eviction. |

@@ -48,7 +48,8 @@ type Config struct {
 // Concurrency model:
 //   - Concurrent Admit calls share queueMu and use bbolt's batch API so their
 //     queue writes can commit together. Remove and eviction take queueMu
-//     exclusively while selecting or mutating queue membership.
+//     exclusively while selecting or mutating queue membership. Eviction
+//     releases it between candidates so uploads can proceed during long scans.
 //   - A single background goroutine runs MaybeEvict on a ticker and on
 //     inline signals sent by Admit.
 //   - m.mu protects only in-memory byte and length counters. Filesystem and
@@ -311,50 +312,22 @@ func (m *Manager) maybeEvict(ctx context.Context) {
 	var decisionErr error
 	var pending *pendingEviction
 
-	// Queue selection and counter accounting are exclusive, but physical blob
-	// deletion is completed after releasing queueMu.
-	m.queueMu.Lock()
 	state := m.snapshotState()
 	if state.smallBytes+state.mainBytes > m.config.MaxSize {
-		// acted is true when a queue took a real action (eviction, promotion, or
-		// second chance). Pinned skips only rotate candidates, so we scan past
-		// them within this run but stop after one full pass to avoid hot loops.
-		// Prefer evicting from small when it exceeds its quota.
-		if state.smallBytes > smallTarget && state.smallLen > 0 {
-			attempts := state.smallLen
-			for i := 0; i < attempts; i++ {
-				var skipped bool
-				skipped, pending, decisionErr = m.evictFromSmall(ctx)
-				if decisionErr != nil {
-					m.logger.Warn("s3fifo: evict from small error", "error", decisionErr)
-					break
-				}
-				if !skipped {
-					acted = true
-					break
-				}
-			}
+		acted, pending, decisionErr = m.scanEvictionQueue(ctx, QueueSmall, state.smallLen, smallTarget)
+		if decisionErr != nil && ctx.Err() == nil {
+			m.logger.Warn("s3fifo: evict from small error", "error", decisionErr)
 		}
 
 		// If small couldn't contribute (empty or all pinned), try main.
 		state = m.snapshotState()
-		if !acted && decisionErr == nil && state.mainLen > 0 {
-			attempts := state.mainLen
-			for i := 0; i < attempts; i++ {
-				var skipped bool
-				skipped, pending, decisionErr = m.evictFromMain(ctx)
-				if decisionErr != nil {
-					m.logger.Warn("s3fifo: evict from main error", "error", decisionErr)
-					break
-				}
-				if !skipped {
-					acted = true
-					break
-				}
+		if !acted && decisionErr == nil {
+			acted, pending, decisionErr = m.scanEvictionQueue(ctx, QueueMain, state.mainLen, smallTarget)
+			if decisionErr != nil && ctx.Err() == nil {
+				m.logger.Warn("s3fifo: evict from main error", "error", decisionErr)
 			}
 		}
 	}
-	m.queueMu.Unlock()
 
 	if pending != nil {
 		if err := m.deleteFromBackend(ctx, pending.queue, pending.hash); err != nil {
@@ -393,6 +366,43 @@ func (m *Manager) maybeEvict(ctx context.Context) {
 	)
 
 	telemetry.RecordS3FIFOEvictionRun(ctx, time.Since(start))
+}
+
+// scanEvictionQueue makes at most one eviction, promotion or second-chance
+// decision. Pinned entries are rotated, with the scan bounded by the initial
+// queue length so an all-pinned queue cannot cause an unbounded retry loop.
+func (m *Manager) scanEvictionQueue(ctx context.Context, queue string, attempts int, smallTarget int64) (bool, *pendingEviction, error) {
+	for range attempts {
+		if err := ctx.Err(); err != nil {
+			return false, nil, err
+		}
+
+		// Queue membership and counters must change atomically for a candidate,
+		// but admissions and removals may proceed between candidates. Recheck
+		// capacity under the lock before selecting another blob.
+		m.queueMu.Lock()
+		state := m.snapshotState()
+		if state.smallBytes+state.mainBytes <= m.config.MaxSize ||
+			(queue == QueueSmall && (state.smallBytes <= smallTarget || state.smallLen == 0)) ||
+			(queue == QueueMain && state.mainLen == 0) {
+			m.queueMu.Unlock()
+			return false, nil, nil
+		}
+
+		var skipped bool
+		var pending *pendingEviction
+		var err error
+		if queue == QueueSmall {
+			skipped, pending, err = m.evictFromSmall(ctx)
+		} else {
+			skipped, pending, err = m.evictFromMain(ctx)
+		}
+		m.queueMu.Unlock()
+		if err != nil || !skipped {
+			return err == nil, pending, err
+		}
+	}
+	return false, nil, nil
 }
 
 type queueState struct {
