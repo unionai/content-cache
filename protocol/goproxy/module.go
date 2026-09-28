@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // ErrNotFound is returned when a module or version is not found.

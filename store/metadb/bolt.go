@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/buildkite/content-cache/telemetry"
+	"github.com/unionai/content-cache/telemetry"
 	"go.etcd.io/bbolt"
 	"google.golang.org/protobuf/proto"
 )

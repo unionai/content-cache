@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/buildkite/content-cache/store/metadb"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 // Index manages the key → blob mapping using metadb envelope storage.

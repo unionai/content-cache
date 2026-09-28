@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/credentials"
-	"github.com/buildkite/content-cache/protocol/goproxy"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/credentials"
+	"github.com/unionai/content-cache/protocol/goproxy"
 )
 
 func TestNewRejectsGitHubAppRoutesWithoutTrustedSingleTenant(t *testing.T) {

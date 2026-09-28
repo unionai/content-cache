@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
-	"github.com/buildkite/content-cache/store/metadb"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
+	"github.com/unionai/content-cache/store/metadb"
 )
 
 func TestEncodePath(t *testing.T) {

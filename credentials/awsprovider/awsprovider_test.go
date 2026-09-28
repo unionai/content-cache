@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/buildkite/content-cache/credentials"
 	"github.com/stretchr/testify/require"
+	"github.com/unionai/content-cache/credentials"
 )
 
 type mockSSMClient struct {

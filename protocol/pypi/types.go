@@ -4,7 +4,7 @@ package pypi
 import (
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
+	contentcache "github.com/unionai/content-cache"
 )
 
 // APIMeta contains API version information (PEP 691).

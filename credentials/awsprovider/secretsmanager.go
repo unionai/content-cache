@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/buildkite/content-cache/credentials"
+	"github.com/unionai/content-cache/credentials"
 )
 
 // SecretsManagerClient is the interface for AWS Secrets Manager operations.

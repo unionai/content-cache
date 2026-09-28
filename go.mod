@@ -1,4 +1,4 @@
-module github.com/buildkite/content-cache
+module github.com/unionai/content-cache
 
 go 1.25.5
 

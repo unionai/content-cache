@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	contentcache "github.com/buildkite/content-cache"
 	"github.com/stretchr/testify/require"
+	contentcache "github.com/unionai/content-cache"
 )
 
 func TestDo_SingleCall(t *testing.T) {

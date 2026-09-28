@@ -46,6 +46,15 @@ Queue state is persisted in bbolt, so eviction is warm across restarts — the m
 
 ## Quick Start
 
+Install the UnionAI fork from `main` (the binary includes both `serve` and
+`cacheprog`):
+
+```bash
+go install github.com/unionai/content-cache/cmd/content-cache@main
+```
+
+To build from a checkout and start the server:
+
 ```bash
 # Build and run the cache server
 go build -o content-cache ./cmd/content-cache
