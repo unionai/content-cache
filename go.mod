@@ -1,6 +1,6 @@
 module github.com/unionai/content-cache
 
-go 1.25.5
+go 1.26.5
 
 tool github.com/nikolaydubina/go-cover-treemap
 

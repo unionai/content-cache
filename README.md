@@ -46,6 +46,8 @@ Queue state is persisted in bbolt, so eviction is warm across restarts — the m
 
 ## Quick Start
 
+Requires Go 1.26.5 or newer.
+
 Install the UnionAI fork from `main` (the binary includes both `serve` and
 `cacheprog`):
 

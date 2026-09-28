@@ -5,7 +5,7 @@ experimental = true
 lockfile = true
 
 [tools]
-go = "1.26.4"
+go = "1.26.5"
 golangci-lint = "2.12.2"
 "go:github.com/nikolaydubina/go-cover-treemap" = "1.5.1"
 goreleaser = "2.16.0"
