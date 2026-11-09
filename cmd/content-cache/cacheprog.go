@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,11 +28,27 @@ type CacheprogCmd struct {
 	Server   string `kong:"name='server',required,env='CONTENT_CACHE_SERVER',help='content-cache server URL (e.g. http://localhost:8080)'"`
 	LocalDir string `kong:"name='local-dir',env='CONTENT_CACHE_LOCAL_DIR',help='local directory for artifact files (default: <user-cache-dir>/go/buildcache)'"`
 	// Off by default: any failed request disables the remote cache for the
-	// invocation. On, a failed upload disables only uploads, and the
-	// invocation keeps reading outputs other builds stored, so one upload
-	// that times out on a busy server does not leave a long go command
+	// invocation. On, an upload the server refuses (an error status)
+	// disables only uploads, and the invocation keeps reading outputs other
+	// builds stored, so a busy server does not leave a long go command
 	// (golangci-lint over a repo) to rebuild everything locally.
-	KeepReadsAfterUploadFailure bool `kong:"name='keep-reads-after-upload-failure',env='CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE',help='after a failed upload, stop uploading but keep reading from the remote cache'"`
+	//
+	// Its environment variable, keepReadsEnv, is read in Run rather than by
+	// kong: kong parses the environment for every command, so an empty or
+	// unknown value would stop `serve` and `cacheprog` from starting.
+	KeepReadsAfterUploadFailure bool `kong:"name='keep-reads-after-upload-failure',help='after a refused upload, stop uploading but keep reading from the remote cache (also CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE=true)'"`
+}
+
+const keepReadsEnv = "CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE"
+
+// keepReadsFromEnv reads keepReadsEnv leniently: 1, true, yes or on (any
+// case) turn it on; anything else, empty included, leaves it off.
+func keepReadsFromEnv(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 func (cmd *CacheprogCmd) Run() error {
@@ -56,7 +73,7 @@ func (cmd *CacheprogCmd) Run() error {
 		httpClient:                  httpClient,
 		bw:                          bw,
 		enc:                         json.NewEncoder(bw),
-		keepReadsAfterUploadFailure: cmd.KeepReadsAfterUploadFailure,
+		keepReadsAfterUploadFailure: cmd.KeepReadsAfterUploadFailure || keepReadsFromEnv(os.Getenv(keepReadsEnv)),
 	}
 	return r.run()
 }
@@ -108,31 +125,40 @@ type cacheprogRunner struct {
 	cancel     context.CancelFunc
 
 	// A failed remote request disables further network requests for this Go
-	// invocation. In-flight requests remain bounded by the HTTP client timeout.
-	remoteDisabled atomic.Bool
-
-	// With keepReadsAfterUploadFailure, a failed upload disables only
-	// further uploads for this invocation.
-	keepReadsAfterUploadFailure bool
+	// invocation (remoteDisabled, which sets uploadsDisabled too). The one
+	// exception: with keepReadsAfterUploadFailure, an upload the server
+	// refuses with an error status disables only uploads. In-flight requests
+	// remain bounded by the HTTP client timeout.
+	remoteDisabled              atomic.Bool
 	uploadsDisabled             atomic.Bool
+	keepReadsAfterUploadFailure bool
 }
 
-func (r *cacheprogRunner) disableRemote(err error) {
-	if r.remoteDisabled.CompareAndSwap(false, true) {
-		slog.Warn("cacheprog: remote cache unavailable; using local cache for this invocation", "error", err)
+// warnOnce sets flag and logs msg if flag was not set already.
+func warnOnce(flag *atomic.Bool, msg string, err error) {
+	if flag.CompareAndSwap(false, true) {
+		slog.Warn(msg, "error", err)
 	}
 }
 
-// uploadFailed handles a failed upload: it disables the remote cache, or
-// only uploads when keepReadsAfterUploadFailure is set.
-func (r *cacheprogRunner) uploadFailed(err error) {
+func (r *cacheprogRunner) disableRemote(err error) {
+	r.uploadsDisabled.Store(true)
+	warnOnce(&r.remoteDisabled, "cacheprog: remote cache unavailable; using local cache for this invocation", err)
+}
+
+// uploadRefused handles an upload the server answered with an error status:
+// it disables the remote cache, or with keepReadsAfterUploadFailure only
+// uploads. An upload the server did not answer at all is disableRemote's.
+func (r *cacheprogRunner) uploadRefused(err error) {
 	if !r.keepReadsAfterUploadFailure {
 		r.disableRemote(err)
 		return
 	}
-	if r.uploadsDisabled.CompareAndSwap(false, true) {
-		slog.Warn("cacheprog: remote upload failed; reading from the remote cache but not uploading for this invocation", "error", err)
+	if r.remoteDisabled.Load() { // a read failed meanwhile and said so
+		r.uploadsDisabled.Store(true)
+		return
 	}
+	warnOnce(&r.uploadsDisabled, "cacheprog: remote upload failed; reading from the remote cache but not uploading for this invocation", err)
 }
 
 func (r *cacheprogRunner) writeResponse(res progResponse) error {
@@ -348,7 +374,7 @@ func (r *cacheprogRunner) handlePut(ctx context.Context, req progRequest, body [
 	writeSidecar(metaFile, localMeta{OutputID: outputIDHex, Size: int64(len(body)), Time: &now})
 	res := progResponse{ID: req.ID, DiskPath: localFile}
 
-	if r.remoteDisabled.Load() || r.uploadsDisabled.Load() {
+	if r.uploadsDisabled.Load() {
 		return res
 	}
 
@@ -356,25 +382,26 @@ func (r *cacheprogRunner) handlePut(ctx context.Context, req progRequest, body [
 	uploadURL := r.serverURL + "/buildcache/" + actionHex + "?output_id=" + outputIDHex
 	uploadReq, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(body))
 	if err != nil {
-		r.uploadFailed(fmt.Errorf("creating upload request: %w", err))
+		r.disableRemote(fmt.Errorf("creating upload request: %w", err))
 		return res
 	}
 	uploadReq.ContentLength = int64(len(body))
 
 	uploadResp, err := r.httpClient.Do(uploadReq)
 	if err != nil {
-		r.uploadFailed(fmt.Errorf("uploading blob: %w", err))
+		r.disableRemote(fmt.Errorf("uploading blob: %w", err))
 		return res
 	}
 	defer func() { _ = uploadResp.Body.Close() }()
 
-	if uploadResp.StatusCode != http.StatusNoContent {
-		r.uploadFailed(fmt.Errorf("upload returned status %d", uploadResp.StatusCode))
+	// Read the body to EOF either way so the transport can reuse the
+	// connection, which reads still use after a refused upload.
+	if _, err := io.Copy(io.Discard, uploadResp.Body); err != nil {
+		r.disableRemote(fmt.Errorf("reading upload response: %w", err))
 		return res
 	}
-
-	if _, err := io.Copy(io.Discard, uploadResp.Body); err != nil {
-		r.uploadFailed(fmt.Errorf("reading upload response: %w", err))
+	if uploadResp.StatusCode != http.StatusNoContent {
+		r.uploadRefused(fmt.Errorf("upload returned status %d", uploadResp.StatusCode))
 	}
 
 	return res
