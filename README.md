@@ -211,6 +211,14 @@ the existing 30-second timeout. Ordinary HTTP 404 cache misses do not disable
 remote caching. The next Go invocation tries the server again; artifacts saved
 only locally during an outage are not automatically uploaded later.
 
+With `--keep-reads-after-upload-failure` (or
+`CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE=true`), a failed upload disables
+only further uploads for that invocation, and the client keeps reading from the
+remote cache; a failed read still disables both. On a busy server, one upload
+that times out would otherwise make the rest of a long Go command, such as
+golangci-lint over a large repository, rebuild everything it could have read.
+It is off by default.
+
 The local cache directory must remain writable. Errors that prevent storing a
 local artifact still fail the Go command. This fallback applies to Go's
 `GOCACHEPROG` build and test cache, independently of module downloads via

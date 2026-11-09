@@ -296,6 +296,56 @@ func TestRemoteFailureUsesLocalCache(t *testing.T) {
 	}
 }
 
+func TestUploadFailureKeepsReadsWhenConfigured(t *testing.T) {
+	for _, keepReads := range []bool{false, true} {
+		t.Run(strconv.FormatBool(keepReads), func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			t.Cleanup(func() { slog.SetDefault(previous) })
+			var gets, puts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPut {
+					puts.Add(1)
+					http.Error(w, "busy", http.StatusServiceUnavailable)
+					return
+				}
+				gets.Add(1)
+				w.Header().Set("X-Output-ID", hex.EncodeToString([]byte("stored")))
+				_, _ = w.Write([]byte("stored by another build"))
+			}))
+			t.Cleanup(srv.Close)
+			runner, _ := newTestRunner(t, srv.URL)
+			runner.keepReadsAfterUploadFailure = keepReads
+
+			put := runner.handlePut(t.Context(), progRequest{ID: 1, ActionID: []byte("a"), OutputID: []byte("a")}, []byte("data"))
+			require.Empty(t, put.Err)
+			require.Equal(t, int32(1), puts.Load())
+
+			// A later upload is not attempted either way.
+			put = runner.handlePut(t.Context(), progRequest{ID: 2, ActionID: []byte("b"), OutputID: []byte("b")}, []byte("data"))
+			require.Empty(t, put.Err)
+			require.Equal(t, int32(1), puts.Load())
+
+			get := runner.handleGet(t.Context(), progRequest{ID: 3, ActionID: []byte("other")})
+			require.Empty(t, get.Err)
+			if keepReads {
+				require.False(t, get.Miss)
+				require.Equal(t, int32(1), gets.Load())
+				data, err := os.ReadFile(get.DiskPath)
+				require.NoError(t, err)
+				require.Equal(t, "stored by another build", string(data))
+				require.Equal(t, 1, strings.Count(logs.String(), "remote upload failed"))
+				require.Zero(t, strings.Count(logs.String(), "remote cache unavailable"))
+			} else {
+				require.True(t, get.Miss)
+				require.Zero(t, gets.Load())
+				require.Equal(t, 1, strings.Count(logs.String(), "remote cache unavailable"))
+			}
+		})
+	}
+}
+
 func TestHandleGetInterruptedDownloadDisablesRemote(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
