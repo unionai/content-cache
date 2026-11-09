@@ -296,6 +296,53 @@ func TestRemoteFailureUsesLocalCache(t *testing.T) {
 	}
 }
 
+func TestUploadFailureKeepsReadsWhenConfigured(t *testing.T) {
+	for _, keepReads := range []bool{false, true} {
+		t.Run(strconv.FormatBool(keepReads), func(t *testing.T) {
+			logs := captureSlog(t)
+			var gets, puts atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPut {
+					puts.Add(1)
+					http.Error(w, "busy", http.StatusServiceUnavailable)
+					return
+				}
+				gets.Add(1)
+				w.Header().Set("X-Output-ID", hex.EncodeToString([]byte("stored")))
+				_, _ = w.Write([]byte("stored by another build"))
+			}))
+			t.Cleanup(srv.Close)
+			runner, _ := newTestRunner(t, srv.URL)
+			runner.keepReadsAfterUploadFailure = keepReads
+
+			put := runner.handlePut(t.Context(), progRequest{ID: 1, ActionID: []byte("a"), OutputID: []byte("a")}, []byte("data"))
+			require.Empty(t, put.Err)
+			require.Equal(t, int32(1), puts.Load())
+
+			// A later upload is not attempted either way.
+			put = runner.handlePut(t.Context(), progRequest{ID: 2, ActionID: []byte("b"), OutputID: []byte("b")}, []byte("data"))
+			require.Empty(t, put.Err)
+			require.Equal(t, int32(1), puts.Load())
+
+			get := runner.handleGet(t.Context(), progRequest{ID: 3, ActionID: []byte("other")})
+			require.Empty(t, get.Err)
+			if keepReads {
+				require.False(t, get.Miss)
+				require.Equal(t, int32(1), gets.Load())
+				data, err := os.ReadFile(get.DiskPath)
+				require.NoError(t, err)
+				require.Equal(t, "stored by another build", string(data))
+				require.Equal(t, 1, strings.Count(logs.String(), "remote upload failed"))
+				require.Zero(t, strings.Count(logs.String(), "remote cache unavailable"))
+			} else {
+				require.True(t, get.Miss)
+				require.Zero(t, gets.Load())
+				require.Equal(t, 1, strings.Count(logs.String(), "remote cache unavailable"))
+			}
+		})
+	}
+}
+
 func TestHandleGetInterruptedDownloadDisablesRemote(t *testing.T) {
 	for _, status := range []int{http.StatusOK, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -343,10 +390,7 @@ func TestHandlePutLocalFailure(t *testing.T) {
 }
 
 func TestConcurrentRemoteFailuresWarnOnce(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
+	logs := captureSlog(t)
 	runner, _ := newTestRunner(t, "http://unused")
 	const workers = 8
 	started := make(chan struct{}, workers)
@@ -485,4 +529,109 @@ func TestRunProtocolEOF(t *testing.T) {
 	err := runner.run()
 	_ = stdoutW.Close()
 	require.NoError(t, err)
+}
+
+// captureSlog sends slog's default logger to a buffer for the test.
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	return &logs
+}
+
+// An upload the server never answers (connection dropped, timeout) says the
+// server is unresponsive, so reads stop too, even with keep-reads on.
+func TestUploadTransportFailureDisablesReadsEvenWhenKeepingReads(t *testing.T) {
+	var gets atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Errorf("hijacking the upload: %v", err)
+				return
+			}
+			_ = conn.Close()
+			return
+		}
+		gets.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	runner, _ := newTestRunner(t, srv.URL)
+	runner.keepReadsAfterUploadFailure = true
+
+	put := runner.handlePut(t.Context(), progRequest{ID: 1, ActionID: []byte("a"), OutputID: []byte("a")}, []byte("data"))
+	require.Empty(t, put.Err)
+	get := runner.handleGet(t.Context(), progRequest{ID: 2, ActionID: []byte("other")})
+
+	require.True(t, get.Miss)
+	require.Zero(t, gets.Load())
+	require.True(t, runner.remoteDisabled.Load())
+}
+
+// A failed read disables uploads too, with keep-reads on.
+func TestReadFailureDisablesUploadsWhenKeepingReads(t *testing.T) {
+	var puts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			puts.Add(1)
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.Error(w, "broken", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	runner, _ := newTestRunner(t, srv.URL)
+	runner.keepReadsAfterUploadFailure = true
+
+	get := runner.handleGet(t.Context(), progRequest{ID: 1, ActionID: []byte("a")})
+	require.True(t, get.Miss)
+	put := runner.handlePut(t.Context(), progRequest{ID: 2, ActionID: []byte("b"), OutputID: []byte("b")}, []byte("data"))
+
+	require.Empty(t, put.Err)
+	require.Zero(t, puts.Load())
+}
+
+// An upload that fails after a read already disabled the remote does not
+// add a warning saying reads continue.
+func TestUploadFailureAfterReadFailureWarnsOnce(t *testing.T) {
+	logs := captureSlog(t)
+	runner, _ := newTestRunner(t, "http://unused")
+	runner.keepReadsAfterUploadFailure = true
+
+	runner.disableRemote(errors.New("get returned status 500"))
+	runner.uploadRefused(errors.New("upload returned status 503"))
+
+	require.Equal(t, 1, strings.Count(logs.String(), "remote cache unavailable"))
+	require.Zero(t, strings.Count(logs.String(), "remote upload failed"))
+}
+
+// A refused upload's response is read to the end, so its connection serves
+// the reads that keep going.
+func TestRefusedUploadKeepsItsConnection(t *testing.T) {
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			_, _ = io.Copy(io.Discard, r.Body)
+			http.Error(w, strings.Repeat("busy ", 2000), http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	runner, _ := newTestRunner(t, srv.URL)
+	runner.keepReadsAfterUploadFailure = true
+
+	runner.handlePut(t.Context(), progRequest{ID: 1, ActionID: []byte("a"), OutputID: []byte("a")}, []byte("data"))
+	runner.handleGet(t.Context(), progRequest{ID: 2, ActionID: []byte("b")})
+
+	require.Equal(t, int32(1), conns.Load())
 }

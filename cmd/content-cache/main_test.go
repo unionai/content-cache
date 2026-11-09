@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"testing"
@@ -144,5 +145,33 @@ func TestServeCmdValidateMavenUpstream(t *testing.T) {
 			require.Error(t, err)
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
+	}
+}
+
+// The keep-reads variable is the cacheprog client's. An empty or unknown
+// value must not stop either command from starting: a failed cacheprog
+// start fails the whole Go command.
+func TestCLIParserKeepReadsEnvironmentNeverBlocksStartup(t *testing.T) {
+	for _, value := range []string{"", "on", "enabled", "true"} {
+		for _, args := range [][]string{nil, {"serve"}, {"cacheprog"}} {
+			t.Run(value+"/"+fmt.Sprint(args), func(t *testing.T) {
+				t.Setenv("CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE", value)
+				t.Setenv("CONTENT_CACHE_SERVER", "http://cache.example:8080")
+				var cli CLI
+				parser, err := newCLIParser(&cli, args, io.Discard, io.Discard)
+				require.NoError(t, err)
+				_, err = parser.Parse(args)
+				require.NoError(t, err)
+			})
+		}
+	}
+}
+
+func TestKeepReadsFromEnvironment(t *testing.T) {
+	for value, want := range map[string]bool{
+		"": false, "0": false, "false": false, "no": false, "off": false, "garbage": false,
+		"1": true, "true": true, "TRUE": true, "yes": true, "on": true,
+	} {
+		require.Equal(t, want, keepReadsFromEnv(value), value)
 	}
 }

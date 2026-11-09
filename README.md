@@ -188,14 +188,15 @@ cargo build  # Subsequent builds: artifacts served from cache
 ./gradlew build  # Build outputs are stored in and served from the HTTP cache
 ```
 
-The `cacheprog` subcommand reads `CONTENT_CACHE_SERVER` and
-`CONTENT_CACHE_LOCAL_DIR`. It ignores server configuration such as `LOG_LEVEL`,
+The `cacheprog` subcommand reads `CONTENT_CACHE_SERVER`,
+`CONTENT_CACHE_LOCAL_DIR` and `CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE`
+(see below). It ignores server configuration such as `LOG_LEVEL`,
 so a parent build can use its own logging settings. Client diagnostics and help
 go to stderr; stdout is reserved for Go's JSON cache protocol.
 
 The client retains up to 64 idle HTTP connections per host for reuse between
-bursts of cache requests. It reads HTTP 404 response bodies before closing them
-so cache misses can reuse connections too. Connections are scoped to each
+bursts of cache requests. It reads HTTP 404 response bodies, and the bodies of
+refused uploads, before closing them so those connections are reused too. Connections are scoped to each
 client invocation, and requests retain the 30-second timeout.
 
 ### Go cache server outages
@@ -206,10 +207,22 @@ upload still returns the local artifact to Go; a failed remote read is a cache
 miss, so Go rebuilds the artifact.
 
 After the first remote failure, the client logs one warning to stderr and skips
-further remote requests for that Go invocation. Requests already in flight keep
+further remote requests for that Go invocation (but see the option below). Requests already in flight keep
 the existing 30-second timeout. Ordinary HTTP 404 cache misses do not disable
 remote caching. The next Go invocation tries the server again; artifacts saved
 only locally during an outage are not automatically uploaded later.
+
+With `--keep-reads-after-upload-failure` (or
+`CONTENT_CACHE_KEEP_READS_AFTER_UPLOAD_FAILURE` set to `1`, `true`, `yes` or
+`on`), an upload the server refuses with an error status (a busy server's 503,
+say) disables only further uploads for that invocation, and the client logs that
+warning instead and keeps reading from the remote cache. On a busy server, one
+refused upload would otherwise make the rest of a long Go command, such as
+golangci-lint over a large repository, rebuild everything it could have read.
+An upload the server does not answer at all (a timeout, a dropped connection)
+and any failed read still disable both, as without the option. It is off by
+default; an empty or unrecognised value of the variable leaves it off and never
+stops `serve` or `cacheprog` from starting.
 
 The local cache directory must remain writable. Errors that prevent storing a
 local artifact still fail the Go command. This fallback applies to Go's
