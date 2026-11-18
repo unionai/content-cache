@@ -159,7 +159,17 @@ func (r *EnvelopeReaper) reapBatch(ctx context.Context) (int, bool) {
 
 	r.logger.Debug("reaping expired envelopes", "count", len(expired))
 
-	deleted := 0
+	deleted, err := r.db.DeleteExpiredEnvelopes(ctx, expired)
+	if err == nil {
+		return deleted, len(expired) == r.batchSize
+	}
+
+	// One bad entry fails the whole transaction. Retry one at a time so the
+	// rest of the batch is still reaped and the failing entry is logged.
+	r.logger.Warn("batch delete of expired envelopes failed, retrying one at a time",
+		"count", len(expired),
+		"error", err)
+	deleted = 0
 	hadError := false
 	for _, entry := range expired {
 		select {
