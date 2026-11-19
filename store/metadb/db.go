@@ -24,6 +24,7 @@ type EnvelopeStore interface {
 type EnvelopeExpiryStore interface {
 	GetExpiredEnvelopes(ctx context.Context, before time.Time, limit int) ([]EnvelopeExpiryEntry, error)
 	DeleteExpiredEnvelope(ctx context.Context, entry EnvelopeExpiryEntry) (bool, error)
+	DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeExpiryEntry) (int, error)
 }
 
 // MetaExpiryStore is the narrow interface used by ExpiryReaper for legacy metadata cleanup.

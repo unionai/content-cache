@@ -266,6 +266,61 @@ func TestEnvelope_DeleteExpiredSkipsRefreshedEnvelope(t *testing.T) {
 	require.Equal(t, 1, newBlob.RefCount)
 }
 
+func TestEnvelope_DeleteExpiredBatch(t *testing.T) {
+	db := setupEnvelopeTestDB(t)
+	ctx := context.Background()
+
+	sharedHash := "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	require.NoError(t, db.PutBlob(ctx, &BlobEntry{Hash: sharedHash, Size: 100}))
+
+	now := time.Now()
+	expired := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		ExpiresAtUnixMs: now.Add(-time.Hour).UnixMilli(),
+		BlobRefs:        []string{sharedHash},
+	}
+	for _, key := range []string{"pkg1", "pkg2", "pkg3"} {
+		require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", key, expired))
+	}
+
+	entries, err := db.GetExpiredEnvelopes(ctx, now, 10)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+
+	// pkg2 is refreshed after the reaper's snapshot and must survive.
+	refreshed := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{"version":2}`),
+		ExpiresAtUnixMs: now.Add(time.Hour).UnixMilli(),
+		BlobRefs:        []string{sharedHash},
+	}
+	require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", "pkg2", refreshed))
+
+	deleted, err := db.DeleteExpiredEnvelopes(ctx, entries)
+	require.NoError(t, err)
+	require.Equal(t, 2, deleted)
+
+	keys, err := db.ListEnvelopeKeys(ctx, "npm", "metadata")
+	require.NoError(t, err)
+	require.Equal(t, []string{"pkg2"}, keys)
+
+	// Only the refreshed envelope still references the blob.
+	blob, err := db.GetBlob(ctx, sharedHash)
+	require.NoError(t, err)
+	require.Equal(t, 1, blob.RefCount)
+
+	remaining, err := db.GetExpiredEnvelopes(ctx, now, 10)
+	require.NoError(t, err)
+	require.Empty(t, remaining)
+
+	deleted, err = db.DeleteExpiredEnvelopes(ctx, nil)
+	require.NoError(t, err)
+	require.Zero(t, deleted)
+}
+
 func TestEnvelope_UpdateModify(t *testing.T) {
 	db := setupEnvelopeTestDB(t)
 	ctx := context.Background()

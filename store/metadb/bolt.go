@@ -1302,51 +1302,87 @@ func (b *BoltDB) GetExpiredEnvelopes(_ context.Context, before time.Time, limit 
 func (b *BoltDB) DeleteExpiredEnvelope(ctx context.Context, entry EnvelopeExpiryEntry) (bool, error) {
 	deleted := false
 	err := b.batch(ctx, "delete_expired_envelope", func(tx *bbolt.Tx) error {
-		deleted = false
-		envBucket := tx.Bucket(bucketEnvelopes)
-		refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
-		blobsBucket := tx.Bucket(bucketBlobsByHash)
-		expiryBucket := tx.Bucket(bucketEnvelopeByExpiry)
-		reverseIndexBucket := tx.Bucket(bucketEnvelopeExpiryByKey)
-
-		compoundKey := makeEnvelopeKey(entry.Protocol, entry.Kind, entry.Key)
-		expectedExpiry := encodeTimestamp(entry.ExpiresAt)
-
-		// Expired entries are selected in a separate read transaction. A request
-		// may refresh the same envelope before this delete transaction starts, so
-		// only delete when the current reverse index still matches the snapshot.
-		if reverseIndexBucket == nil || !bytes.Equal(reverseIndexBucket.Get(compoundKey), expectedExpiry) {
-			return nil
-		}
-
-		if refsBucket != nil && blobsBucket != nil {
-			refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
-			for _, hash := range refs {
-				if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
-					return fmt.Errorf("decrementing ref for %s: %w", hash, err)
-				}
-			}
-			if err := refsBucket.Delete(compoundKey); err != nil {
-				return fmt.Errorf("deleting envelope refs: %w", err)
-			}
-		}
-
-		if expiryBucket != nil {
-			expiryKey := makeEnvelopeExpiryKey(entry.ExpiresAt, entry.Protocol, entry.Kind, entry.Key)
-			if err := expiryBucket.Delete(expiryKey); err != nil {
-				return fmt.Errorf("deleting envelope expiry: %w", err)
-			}
-		}
-		if err := reverseIndexBucket.Delete(compoundKey); err != nil {
-			return fmt.Errorf("deleting envelope reverse expiry: %w", err)
-		}
-		if envBucket != nil {
-			if err := envBucket.Delete(compoundKey); err != nil {
-				return fmt.Errorf("deleting envelope: %w", err)
-			}
-		}
-		deleted = true
-		return nil
+		var err error
+		deleted, err = b.deleteExpiredEnvelopeTx(tx, entry)
+		return err
 	})
 	return deleted, err
+}
+
+// DeleteExpiredEnvelopes deletes a batch of expired envelopes in one
+// transaction, skipping any whose expiry index no longer matches the reaper's
+// snapshot. It returns how many were deleted.
+//
+// The reaper is a single serial caller, so submitting each entry through the
+// shared batcher on its own pays a full commit plus the batch delay per entry
+// and caps reaping well below the rate busy build caches write envelopes.
+func (b *BoltDB) DeleteExpiredEnvelopes(ctx context.Context, entries []EnvelopeExpiryEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+	deleted := 0
+	err := b.batch(ctx, "delete_expired_envelopes", func(tx *bbolt.Tx) error {
+		// bbolt may rerun a batch callback on its own transaction, so start over.
+		deleted = 0
+		for _, entry := range entries {
+			removed, err := b.deleteExpiredEnvelopeTx(tx, entry)
+			if err != nil {
+				return err
+			}
+			if removed {
+				deleted++
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+func (b *BoltDB) deleteExpiredEnvelopeTx(tx *bbolt.Tx, entry EnvelopeExpiryEntry) (bool, error) {
+	envBucket := tx.Bucket(bucketEnvelopes)
+	refsBucket := tx.Bucket(bucketEnvelopeBlobRefs)
+	blobsBucket := tx.Bucket(bucketBlobsByHash)
+	expiryBucket := tx.Bucket(bucketEnvelopeByExpiry)
+	reverseIndexBucket := tx.Bucket(bucketEnvelopeExpiryByKey)
+
+	compoundKey := makeEnvelopeKey(entry.Protocol, entry.Kind, entry.Key)
+	expectedExpiry := encodeTimestamp(entry.ExpiresAt)
+
+	// Expired entries are selected in a separate read transaction. A request
+	// may refresh the same envelope before this delete transaction starts, so
+	// only delete when the current reverse index still matches the snapshot.
+	if reverseIndexBucket == nil || !bytes.Equal(reverseIndexBucket.Get(compoundKey), expectedExpiry) {
+		return false, nil
+	}
+
+	if refsBucket != nil && blobsBucket != nil {
+		refs := b.getEnvelopeBlobRefs(refsBucket, compoundKey)
+		for _, hash := range refs {
+			if err := b.decrementBlobRefInTx(blobsBucket, hash); err != nil {
+				return false, fmt.Errorf("decrementing ref for %s: %w", hash, err)
+			}
+		}
+		if err := refsBucket.Delete(compoundKey); err != nil {
+			return false, fmt.Errorf("deleting envelope refs: %w", err)
+		}
+	}
+
+	if expiryBucket != nil {
+		expiryKey := makeEnvelopeExpiryKey(entry.ExpiresAt, entry.Protocol, entry.Kind, entry.Key)
+		if err := expiryBucket.Delete(expiryKey); err != nil {
+			return false, fmt.Errorf("deleting envelope expiry: %w", err)
+		}
+	}
+	if err := reverseIndexBucket.Delete(compoundKey); err != nil {
+		return false, fmt.Errorf("deleting envelope reverse expiry: %w", err)
+	}
+	if envBucket != nil {
+		if err := envBucket.Delete(compoundKey); err != nil {
+			return false, fmt.Errorf("deleting envelope: %w", err)
+		}
+	}
+	return true, nil
 }

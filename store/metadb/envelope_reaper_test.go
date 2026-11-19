@@ -2,6 +2,7 @@ package metadb
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -347,6 +348,76 @@ func TestEnvelopeReaper_UpdatedExpiryIsRespected(t *testing.T) {
 	require.Equal(t, 0, count)
 
 	keys, err := db.ListEnvelopeKeys(ctx, "npm", "metadata")
+	require.NoError(t, err)
+	require.Equal(t, []string{"pkg"}, keys)
+}
+
+// failingBatchStore fails every batch delete and one named entry, so the
+// reaper has to fall back to per-entry deletes.
+type failingBatchStore struct {
+	*BoltDB
+	failKey string
+}
+
+func (s *failingBatchStore) DeleteExpiredEnvelopes(context.Context, []EnvelopeExpiryEntry) (int, error) {
+	return 0, errors.New("batch failed")
+}
+
+func (s *failingBatchStore) DeleteExpiredEnvelope(ctx context.Context, entry EnvelopeExpiryEntry) (bool, error) {
+	if entry.Key == s.failKey {
+		return false, errors.New("entry failed")
+	}
+	return s.BoltDB.DeleteExpiredEnvelope(ctx, entry)
+}
+
+func TestEnvelopeReaper_FallsBackToPerEntryOnBatchError(t *testing.T) {
+	db := setupReaperTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	env := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		ExpiresAtUnixMs: now.Add(-1 * time.Hour).UnixMilli(),
+	}
+	for _, key := range []string{"bad", "good1", "good2"} {
+		require.NoError(t, db.PutEnvelope(ctx, "npm", "metadata", key, env))
+	}
+
+	reaper := NewEnvelopeReaper(&failingBatchStore{BoltDB: db, failKey: "bad"},
+		WithEnvelopeReaperNow(func() time.Time { return now }),
+	)
+	count := reaper.ReapNow(ctx)
+	require.Equal(t, 2, count)
+
+	keys, err := db.ListEnvelopeKeys(ctx, "npm", "metadata")
+	require.NoError(t, err)
+	require.Equal(t, []string{"bad"}, keys)
+}
+
+func TestEnvelopeReaper_StopsWhenContextCancelled(t *testing.T) {
+	db := setupReaperTestDB(t)
+
+	now := time.Now()
+	env := &MetadataEnvelope{
+		EnvelopeVersion: 1,
+		ContentType:     ContentType_CONTENT_TYPE_JSON,
+		Payload:         []byte(`{}`),
+		ExpiresAtUnixMs: now.Add(-1 * time.Hour).UnixMilli(),
+	}
+	require.NoError(t, db.PutEnvelope(context.Background(), "npm", "metadata", "pkg", env))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	reaper := NewEnvelopeReaper(db,
+		WithEnvelopeReaperNow(func() time.Time { return now }),
+	)
+	count := reaper.ReapNow(ctx)
+	require.Equal(t, 0, count)
+
+	keys, err := db.ListEnvelopeKeys(context.Background(), "npm", "metadata")
 	require.NoError(t, err)
 	require.Equal(t, []string{"pkg"}, keys)
 }
