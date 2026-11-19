@@ -159,6 +159,12 @@ func (r *EnvelopeReaper) reapBatch(ctx context.Context) (int, bool) {
 
 	r.logger.Debug("reaping expired envelopes", "count", len(expired))
 
+	// Neither the expiry query nor the batcher checks the context, so this is
+	// where a cancelled reap stops between batches.
+	if ctx.Err() != nil {
+		return 0, false
+	}
+
 	deleted, err := r.db.DeleteExpiredEnvelopes(ctx, expired)
 	if err == nil {
 		return deleted, len(expired) == r.batchSize
